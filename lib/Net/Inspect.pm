@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 1;
 
 
@@ -27,8 +27,8 @@ Net::Inspect - libary for inspection of data on various network layers
     my $l2 = Net::Inspect::L2::Pcap->new($pcap,$l3);
 
     pcap_loop($pcap,-1,sub {
-    my (undef,$hdr,$data) = @_;
-    return $l2->pktin($data,$hdr);
+	my (undef,$hdr,$data) = @_;
+	return $l2->pktin($data,$hdr);
     });
 
 =head1 DESCRIPTION
