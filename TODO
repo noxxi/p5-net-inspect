@@ -1,0 +1,9 @@
+- more tests
+- support IPv6
+- more useful http analysis
+- more useful filter in http proxy
+- other inspections:
+  - L4::UDP
+  - L7::DNS
+  - L7::SIP + sample to extract RTP streams
+- maybe use Net::Packet instead of parsing raw IP myself
