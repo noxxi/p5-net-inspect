@@ -10,16 +10,16 @@ use warnings;
 
 package privHTTPRequest;
 use base 'Net::Inspect::L7::HTTP::Request::InspectChain';
-use fields qw(outdir flowid flowreqid fn chunked);
+use fields qw(outdir fcache infosub flowid flowreqid fn chunked);
 use Net::Inspect::Debug;
-use privFileCache;
-
-our $fcache = privFileCache->new(128);
 
 sub new {
-    my ($class,$dir) = @_;
+    my ($class,%args) = @_;
     my $self = $class->SUPER::new;
-    $self->{outdir} = $dir || ref($class) && $class->{outdir};
+    $self->{outdir}  = $args{dir}    || ref($class) && $class->{outdir};
+    $self->{fcache}  = $args{fcache} || ref($class) && $class->{fcache};
+    $self->{infosub} = $args{info}   || ref($class) && $class->{infosub};
+    die "no fcache given" if $self->{outdir} and ! $self->{fcache};
     return $self;
 }
 sub new_request {
@@ -32,8 +32,9 @@ sub new_request {
 }
 
 sub DESTROY {
-    my $fn = shift->{fn} or return;
-    $fcache->del($_) for (@$fn);
+    my $self = shift;
+    my $fn = $self->{fn} or return;
+    $self->{fcache} && $self->{fcache}->del($_) for (@$fn);
 }
 
 sub in_request_header {
@@ -50,17 +51,17 @@ sub in_request_header {
 		$dir
 	    );
 	    $self->{fn}[$dir] = $fname;
-	    $fcache->add($fname) or die "cannot create $fname: $!";
+	    $self->{fcache}->add($fname) or die "cannot create $fname: $!";
 	}
 	my $wfh = sub {
 	    my ($self,$dir,$hdr) = @_;
-	    my $fh = $fcache->get($self->{fn}[$dir]);
+	    my $fh = $self->{fcache}->get($self->{fn}[$dir]);
 	    print $fh $hdr;
 	    return 0;
 	};
 	my $wfb = sub {
 	    my ($self,$dir,$dr) = @_;
-	    my $fh = $fcache->get($self->{fn}[$dir]);
+	    my $fh = $self->{fcache}->get($self->{fn}[$dir]);
 	    print $fh $$dr;
 	    $$dr = '';
 	    return '';
@@ -73,19 +74,20 @@ sub in_request_header {
 	    response_body   => sub { $wfb->($_[0],1,$_[1]) },
 	    chunk_header    => sub {
 		my ($self,$hdr) = @_;
-		my $fh = $fcache->get($self->{fn}[1]);
+		my $fh = $self->{fcache}->get($self->{fn}[1]);
 		print $fh "\r\n" if $self->{chunked}++;
 		print $fh $$hdr;
 		$$hdr = '';
 	    },
 	    chunk_trailer   => sub {
 		my ($self,$trailer) = @_;
-		my $fh = $fcache->get($self->{fn}[1]);
+		my $fh = $self->{fcache}->get($self->{fn}[1]);
 		print $fh $$trailer;
 		$$trailer = '';
 	    }
 	});
-    } else {
+    } 
+    if ( my $infosub = $self->{infosub} ) {
 	my $log = sub {
 	    my ($self,$dr,$eof) = @_;
 	    $$dr = '';
@@ -97,14 +99,26 @@ sub in_request_header {
 		    $uri = "http://$host$uri";
 		}
 		my $resp = $self->response_header;
-		printf("%d %05d.%04d %s %s -> %d ct:'%s', %s\n",
-		    $self->{meta}{time},
-		    $self->{flowid},
-		    $self->{flowreqid},
-		    $req->method, $uri,
-		    $resp->code,
-		    join(' ',$resp->header('content-type')),
-		    join(' ', keys %{$self->{info}}),
+		$infosub->( 
+		    sprintf("%d %05d.%04d %s %s -> %d ct:'%s', %s",
+			$self->{meta}{time},
+			$self->{flowid},
+			$self->{flowreqid},
+			$req->method, $uri,
+			$resp->code,
+			join(' ',$resp->header('content-type')),
+			join(' ', keys %{$self->{info}}),
+		    ),
+		    {
+			meta   => $self->{meta},
+			flowid => $self->{flowid},
+			reqid  => $self->{flowreqid},
+			method => $req->method,
+			uri    => $uri,
+			req    => $req,
+			resp   => $resp,
+			info   => $self->{info},
+		    }
 		);
 	    }
 	    return '';

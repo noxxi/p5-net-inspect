@@ -6,7 +6,11 @@ use Getopt::Long qw(:config posix_default bundling);
 use Net::Pcap qw(:functions);
 
 # use private include path based on script path
-BEGIN { unshift @INC, __FILE__ =~m{^(.*?)(?:\.\w+)?$}; }
+BEGIN { 
+    my $bin = __FILE__;
+    $bin = readlink($bin) while ( -l $bin );
+    unshift @INC, $bin =~m{^(.*?)(?:\.\w+)?$}; 
+}
 
 use Net::Inspect::L2::Pcap;
 use Net::Inspect::L3::IP;
@@ -19,11 +23,12 @@ use Net::Inspect::Debug qw(:DEFAULT %TRACE $DEBUG);
 
 use privHTTPConn;
 use privHTTPRequest;
+use privFileCache;
 
 # ---------------------------------------------------------------------------- 
 # usage and options parsing
 # ---------------------------------------------------------------------------- 
-my (@infile,$dev,$nopromisc,@trace,$outdir);
+my (@infile,$dev,$nopromisc,@trace,$outdir,$verbose);
 my $uncompress = my $unchunk = 1;
 
 my $usage = sub {
@@ -47,6 +52,7 @@ Options:
 		     times
 
     ## output
+    -v|--verbose     print information about each request (implied if no outdir)
     -D dir           extract data into dir, right now only for http requests
 		     and responses. If not given prints info to stdout
     --unchunk        do unchunking if saving (default)
@@ -72,6 +78,7 @@ GetOptions(
     'p'           => \$nopromisc,
     'r=s'         => \@infile,
     # output
+    'v|verbose'   => \$verbose,
     'D|dir=s'     => \$outdir,
     'uncompress!' => \$uncompress,
     'unchunk!'    => \$unchunk,
@@ -81,6 +88,7 @@ GetOptions(
 ) or $usage->();
 $usage->('only interface or file can be set') if @infile and $dev;
 $infile[0] = '/dev/stdin' if ! $dev and ! @infile;
+$verbose = 1 if ! $outdir;
 my $pcapfilter = join(' ',@ARGV);
 $TRACE{$_} = 1 for(@trace);
 die "cannot write to $outdir: $!" if $outdir and ! -w $outdir || ! -d _;
@@ -114,7 +122,15 @@ for my $infile (@infile ? @infile : undef ) {
     my $raw   = Net::Inspect::L3::IP->new($tcp);
     my $pc    = Net::Inspect::L2::Pcap->new($pcap,$raw);
 
-    my $http_request = privHTTPRequest->new($outdir);
+    my $http_request = privHTTPRequest->new(
+	! $outdir ? (): ( 
+	    dir => $outdir, 
+	    fcache => privFileCache->new(128) 
+	),
+	! $verbose ? () : (
+	    info => sub { print "$_[0]\n" },
+	),
+    );
     my %opt = ( '-original-header-prefix' => 'X-Original-' );
     $http_request->add_hooks( %opt,'unchunk') if $unchunk || $uncompress;
     $http_request->add_hooks( %opt,'uncompress_te','uncompress_ce') if $uncompress;
