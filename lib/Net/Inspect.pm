@@ -40,7 +40,7 @@ therefore slower to execute but faster to develop and maybe more flexibel
 too.
 
 One can start analysis on some level and stop it at any higher level.
-There are various useful tools in bin/ which make use of this library:
+There are various useful tools in tools/ which make use of this library:
 
 =over 4
 
