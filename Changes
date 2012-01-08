@@ -1,3 +1,6 @@
+0.04 2012/01/08 
+- put Net/Inspect.pm (which just contains documentation for now)
+  inside package Net::Inspect
 0.03 2011/12/21 
 - add HTTP::Request, HTTP::Response and Scalar::Util to prereq
   Thanks to ANDK for reporting
