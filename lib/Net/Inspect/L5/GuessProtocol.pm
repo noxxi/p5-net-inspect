@@ -8,8 +8,10 @@ use warnings;
 ############################################################################
 
 package Net::Inspect::L5::GuessProtocol;
-use base 'Net::Inspect::Flow';
+use base 'Net::Inspect::Connection';
 use fields qw(meta fwd protocols);
+
+use constant EXPIRE => 300;
 
 sub new {
     my ($class,@protocols) = @_;
@@ -27,11 +29,21 @@ sub attach   { shift->{upper_flow}->attach(@_) }
 sub detach   { shift->{upper_flow}->detach(@_) }
 sub attached { shift->{upper_flow}->attached }
 
+# forward expire to fwd flow
+sub expire   {
+    my ($self,$time) = @_;
+    if ( my $obj = $self->{fwd} ) {
+	return $obj->expire($time);
+    }
+    return $self->SUPER::expire($time);
+}
+
 sub syn { 1 }
 sub new_connection {
     my ($self,$meta) = @_;
     my $obj = $self->new; # clone
     $obj->{meta} = $meta;
+    $obj->{expire} = $meta->{time} + EXPIRE;
     return $obj;
 }
 

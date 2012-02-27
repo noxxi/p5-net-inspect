@@ -5,7 +5,7 @@
 use warnings;
 use strict;
 package Net::Inspect::L5::NoData;
-use base 'Net::Inspect::Flow';
+use base 'Net::Inspect::Connection';
 use Net::Inspect::Debug;
 
 sub guess_protocol {

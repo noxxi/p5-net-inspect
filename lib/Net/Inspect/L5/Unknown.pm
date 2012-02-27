@@ -5,7 +5,7 @@
 use warnings;
 use strict;
 package Net::Inspect::L5::Unknown;
-use base 'Net::Inspect::Flow';
+use base 'Net::Inspect::Connection';
 use fields qw(replay);
 use Net::Inspect::Debug;
 
@@ -37,6 +37,7 @@ sub new_connection {
 
 sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
+    $self->{expire} = $time + 500;
     return; # ignores
 }
 

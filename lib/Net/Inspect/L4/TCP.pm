@@ -98,6 +98,7 @@ sub pktin {
 		daddr => $daddr,
 		dport => $dport,
 		dir   => $dir,
+		proto => 6,
 	    });
 	    if ( defined $rv && ! $rv ) {
 		# we don't want a connection for this
@@ -268,6 +269,15 @@ sub pktin {
 sub syn { shift->{upper_flow}->syn(@_) }
 sub new_connection { shift->{upper_flow}->new_connection(@_) }
 
+sub expire {
+    my ($self,$time) = @_;
+    while (my ($k,$c) = each %{$self->{conn}} ) {
+	$c->[2] or next;
+	$c->[2]->expire($time) or next;
+	delete $self->{conn}{$k}
+    }
+}
+
 
 1;
 
@@ -288,7 +298,6 @@ Net::Inspect::L4::TCP - get IP data, extracts TCP connections
 Gets IP packets via C<pktin> method and handles connections.
 
 Provides the hooks required by C<Net::Inspect::L3::IP>.
-Usually C<Net::Inspect::Connection::*> is used as upper flow.
 
 Hooks provided:
 
@@ -365,4 +374,6 @@ object
 =head1 LIMITS
 
 It will not croak on strange flag combinations.
-It will not cleanup memory for connections, where it never gets both FIN.
+
+You should regularly call C<expire> otherwise connection missing final
+handshake will not be expired.

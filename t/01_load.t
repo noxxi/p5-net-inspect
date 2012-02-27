@@ -10,6 +10,7 @@ use Net::Inspect;
 use Net::Inspect::L2::Pcap;
 use Net::Inspect::L3::IP;
 use Net::Inspect::L4::TCP;
+use Net::Inspect::L4::UDP;
 use Net::Inspect::L5::GuessProtocol;
 use Net::Inspect::L5::NoData;
 use Net::Inspect::L5::Unknown;

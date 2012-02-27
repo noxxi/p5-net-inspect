@@ -23,6 +23,11 @@ use Socket;
 
 sub new {
     my ($class,$flow,%args) = @_;
+    if ( ref($flow) eq 'ARRAY' ) {
+	my $f = Net::Inspect::Flow->new_any('pktin');
+	$f->attach($_) for @$flow;
+	$flow = $f;
+    }
     my $self = $class->SUPER::new($flow);
     $self->{frag} = {};
     $self->{frag_timeout} = $args{timeout} || 60;

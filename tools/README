@@ -14,9 +14,9 @@ the created files have the form
 the dir (last part of file) is 0 for requests and 1 for response
 
 
-==== tcpflow
+==== tcpudpflow
 
-similar to httpflow, but for TCP-streams 
+similar to httpflow, but for TCP/UDP-streams 
 
 ==== http_inspection_proxy.pl]
 

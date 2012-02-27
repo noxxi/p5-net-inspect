@@ -147,8 +147,12 @@ for my $infile (@infile ? @infile : undef ) {
     # ------------------------------------------------------------------------ 
     # pcap loop
     # ------------------------------------------------------------------------ 
+    my $time;
     pcap_loop($pcap,-1,sub {
 	my (undef,$hdr,$data) = @_;
+	if ( ! $time || $hdr->{tv_sec}-$time>10 ) {
+	    $tcp->expire($time = $hdr->{tv_sec});
+	}
 	return $pc->pktin($data,$hdr);
     },undef);
 }

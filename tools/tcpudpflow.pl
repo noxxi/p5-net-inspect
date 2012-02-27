@@ -9,6 +9,7 @@ use Net::Inspect::Debug qw(:DEFAULT %TRACE $DEBUG);
 use Net::Inspect::L2::Pcap;
 use Net::Inspect::L3::IP;
 use Net::Inspect::L4::TCP;
+use Net::Inspect::L4::UDP;
 
 ############################################################################
 # Options
@@ -33,7 +34,7 @@ sub usage {
     print STDERR "ERROR: @_\n" if @_;
     print STDERR <<USAGE;
 
-reads data from pcap file or device and extracts tcp streams.
+reads data from pcap file or device and extracts tcp and udp streams.
 
 Usage: $0 [options] [pcap-filter]
 Options:
@@ -69,23 +70,27 @@ if ( $pcapfilter ) {
 # parse hierarchy
 ############################################################################
 
-my $write = ConnWriter->new( $outdir);
-my $tcp = Net::Inspect::L4::TCP->new($write);
-my $raw = Net::Inspect::L3::IP->new($tcp);
+my $tcp = Net::Inspect::L4::TCP->new( ConnWriter->new("$outdir/tcp-"));
+my $udp = Net::Inspect::L4::UDP->new( ConnWriter->new("$outdir/udp-"));
+my $raw = Net::Inspect::L3::IP->new([$tcp,$udp]);
 my $pc  = Net::Inspect::L2::Pcap->new($pcap,$raw);
 
 
 # Mainloop
 ############################################################################
+my $time;
 pcap_loop($pcap,-1,sub {
     my (undef,$hdr,$data) = @_;
+    if ( ! $time || $hdr->{tv_sec}-$time>10 ) {
+	$tcp->expire($time = $hdr->{tv_sec});
+    }
     return $pc->pktin($data,$hdr);
 },undef);
 
 
 package ConnWriter;
-use base 'Net::Inspect::Flow';
-use fields qw(outdir flowid saddr sport daddr dport time);
+use base 'Net::Inspect::Connection';
+use fields qw(prefix flowid saddr sport daddr dport time);
 use Net::Inspect::Debug;
 
 my $flowid = 0;
@@ -93,10 +98,10 @@ sub new {
     my ($class,$dir) = @_;
     my $self = $class->SUPER::new;
     if ( ref $class ) {
-	$self->{outdir} = $dir || $class->{outdir};
+	$self->{prefix} = $dir || $class->{prefix};
 	$self->{flowid} = ++$flowid;
     } else {
-	$self->{outdir} = $dir;
+	$self->{prefix} = $dir;
     }
     return $self;
 }
@@ -105,14 +110,20 @@ sub syn { 1 }
 sub new_connection {
     my ($self,$meta) = @_;
     my $obj = $self->new; # clones attached flows
-    %$obj = ( %$obj, %$meta );
+    %$obj = ( %$obj, 
+	saddr => $meta->{saddr},
+	sport => $meta->{sport},
+	daddr => $meta->{daddr},
+	dport => $meta->{dport},
+	time  => $meta->{time},
+    );
     return $obj;
 }
 
 sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
-    my $fname = sprintf("%s/%05d.%d-%s.%s-%s.%s-%d",
-	$self->{outdir},
+    my $fname = sprintf("%s%05d.%d-%s.%s-%s.%s-%d",
+	$self->{prefix},
 	$self->{flowid},
 	$self->{time},
 	$self->{saddr}, $self->{sport},
@@ -123,3 +134,18 @@ sub in {
     print $fh $data;
     return length($data);
 }
+
+# UDP
+sub pktin {
+    my ($self,$dir,$data,$mt) = @_;
+    if ( ref $mt ) {
+	# meta data, create connection
+	my $conn = $self->new_connection($mt);
+	$conn->in($dir,$data,0,$mt->{time});
+	return $conn;
+    } else {
+	# already connection
+	return $self->in($dir,$data,0,$mt);
+    }
+}
+
