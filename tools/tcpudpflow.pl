@@ -137,15 +137,18 @@ sub in {
 
 # UDP
 sub pktin {
-    my ($self,$dir,$data,$mt) = @_;
-    if ( ref $mt ) {
-	# meta data, create connection
-	my $conn = $self->new_connection($mt);
-	$conn->in($dir,$data,0,$mt->{time});
+    my $self = shift;
+    if ( ref($_[1])) {
+	# packet w/o connection
+	my ($data,$meta) = @_;
+	# create connection
+	my $conn = $self->new_connection($meta);
+	$conn->in(0,$data,0,$meta->{time});
 	return $conn;
     } else {
 	# already connection
-	return $self->in($dir,$data,0,$mt);
+	my ($dir,$data,$time) = @_;
+	return $self->in($dir,$data,0,$time);
     }
 }
 

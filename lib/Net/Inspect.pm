@@ -2,7 +2,7 @@ use strict;
 use warnings;
 package Net::Inspect;
 
-our $VERSION = 0.05;
+our $VERSION = 0.06;
 1;
 
 
@@ -84,6 +84,10 @@ processes raw IP packets, does defragmentation.
 
 handles TCP connections, e.g. connection setup and shutdown and reordering
 of packets.
+
+=item L<Net::Inspect::L5::UDP>
+
+handles UDP packets. Can aggregate udp packets in virtual connections.
 
 =item L<Net::Inspect::L5::GuessProtocol>
 

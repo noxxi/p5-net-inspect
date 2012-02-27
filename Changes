@@ -1,4 +1,4 @@
-0.05 2012/02/27 
+0.06 2012/02/27 , 0.05 2012/02/27 
 - added L4::UDP
 - added expire for TCP and UDP connections
 - upgraded tcpflow to tcpudpflow

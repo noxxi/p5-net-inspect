@@ -56,7 +56,7 @@ sub pktin {
     }
 
     # otherwise just forward packet
-    $conn = $self->{upper_flow}->pktin($dir,$buf,{
+    $conn = $self->{upper_flow}->pktin($buf,{
 	%$meta,
 	sport => $sport,
 	dport => $dport,
