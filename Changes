@@ -1,3 +1,8 @@
+0.08 2012/02/28
+- fixed Changes, added L4::UDP and rtpxtract and renamed tcpudpflow
+  to MANIFEST
+0.07 2012/02/27
+- added rtpxtract
 0.06 2012/02/27 , 0.05 2012/02/27 
 - added L4::UDP
 - added expire for TCP and UDP connections
