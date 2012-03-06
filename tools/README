@@ -22,7 +22,12 @@ similar to httpflow, but for TCP/UDP-streams
 
 extracts RTP streams from SIP calls
 
-==== http_inspection_proxy.pl]
+==== http_inspection_proxy.pl
 
 simple web proxy using the Netflow library to inspect and modify requests and
 responses. Can unchunk, uncompress data before inspecting/modifying them.
+
+==== live-http-headers.pl
+
+small tool to demonstrate how to capture live http requests and show
+the headers

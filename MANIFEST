@@ -24,3 +24,4 @@ tools/http_inspection_proxy.pl
 tools/README
 tools/tcpudpflow.pl
 tools/rtpxtract.pl
+tools/live-http-headers.pl
