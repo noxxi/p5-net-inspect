@@ -29,6 +29,9 @@ sub new_any {
     return Net::Inspect::Flow::Any->new(@_)
 }
 
+# does nothing per default
+sub expire {}
+
 package Net::Inspect::Flow::Any;
 use Digest::MD5 'md5_hex';
 use fields qw(flows);
