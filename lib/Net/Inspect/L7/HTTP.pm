@@ -247,6 +247,7 @@ sub _in0 {
 	    return $bytes;
 	} elsif ( $eof ) {
 	    ($obj||$self)->fatal('eof in request header');
+	    return $bytes;
 	} else {
 	    # will be called on new data from upper flow
 	    $self->xdebug("need more bytes for request header");
