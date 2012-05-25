@@ -299,7 +299,7 @@ sub in_response_body {
     if ( defined $lasthook ) {
 	substr($hooks->[$lasthook][1],0,$n,'') if $n;
 	if ( $eof && grep { $_->[1] ne '' } @$hooks ) {
-	    die "out-buffer in hook not empty at in_response_body(eof)";
+	    die "out-buffer in hook not empty at in_response_body(eof)".Dumper($self); use Data::Dumper;
 	}
 	return $bytes;
     }

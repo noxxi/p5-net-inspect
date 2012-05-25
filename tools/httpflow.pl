@@ -28,7 +28,7 @@ use privFileCache;
 # ---------------------------------------------------------------------------- 
 # usage and options parsing
 # ---------------------------------------------------------------------------- 
-my (@infile,$dev,$nopromisc,@trace,$outdir,$verbose);
+my (@infile,$dev,$nopromisc,@trace,$outdir,$verbose,$anon_stats);
 my $uncompress = my $unchunk = 1;
 
 my $usage = sub {
@@ -52,7 +52,9 @@ Options:
 		     times
 
     ## output
-    -v|--verbose     print information about each request (implied if no outdir)
+    -v|--verbose     print information about each request (implied if no outdir
+                     and no anon-stats)
+    --anon-stats     output anonymous stats for generating benchmarks
     -D dir           extract data into dir, right now only for http requests
 		     and responses. If not given prints info to stdout
     --unchunk        do unchunking if saving (default)
@@ -82,13 +84,14 @@ GetOptions(
     'D|dir=s'     => \$outdir,
     'uncompress!' => \$uncompress,
     'unchunk!'    => \$unchunk,
+    'anon-stats'  => \$anon_stats,
     # debug
     'd|debug'     => \$DEBUG,
     'T|trace=s'   => sub { push @trace, split(m/,/, $_[1]) },
 ) or $usage->();
 $usage->('only interface or file can be set') if @infile and $dev;
 $infile[0] = '/dev/stdin' if ! $dev and ! @infile;
-$verbose = 1 if ! $outdir;
+$verbose = 1 if ! $outdir && ! $anon_stats;
 my $pcapfilter = join(' ',@ARGV);
 $TRACE{$_} = 1 for(@trace);
 die "cannot write to $outdir: $!" if $outdir and ! -w $outdir || ! -d _;
@@ -127,13 +130,15 @@ for my $infile (@infile ? @infile : undef ) {
 	    dir => $outdir, 
 	    fcache => privFileCache->new(128) 
 	),
-	! $verbose ? () : (
-	    info => sub { print "$_[0]\n" },
+	! ( $verbose || $anon_stats ) ? () : (
+	    info => \&info,
 	),
     );
-    my %opt = ( '-original-header-prefix' => 'X-Original-' );
-    $http_request->add_hooks( %opt,'unchunk') if $unchunk || $uncompress;
-    $http_request->add_hooks( %opt,'uncompress_te','uncompress_ce') if $uncompress;
+    if ( $outdir ) {
+	my %opt = ( '-original-header-prefix' => 'X-Original-' );
+	$http_request->add_hooks( %opt,'unchunk') if $unchunk || $uncompress;
+	$http_request->add_hooks( %opt,'uncompress_te','uncompress_ce') if $uncompress;
+    }
 
     my $http_conn = privHTTPConn->new($http_request);
     my $null = Net::Inspect::L5::NoData->new();
@@ -158,3 +163,29 @@ for my $infile (@infile ? @infile : undef ) {
 }
 
 
+# ---------------------------------------------------------------------------- 
+# verbose/anon-stats
+# ---------------------------------------------------------------------------- 
+my $basetime;
+sub info {
+    my ($line,$d) = @_;
+    print "$line\n" if $verbose;
+    if ( $anon_stats ) {
+	$basetime ||= $d->{meta}{time};
+	my $ct = $d->{resp}->header('content-type') || '?';
+	$ct =~s/;.*//;
+	my $ce = $d->{resp}->header('content-encoding');
+	printf("%7.2f %6.2f %05d.%04d %s/%s%s stat:%d,%d,%d,%d%s%s\n",
+	    $d->{meta}{time} - $basetime,
+	    $d->{stat}{duration},
+	    $d->{flowid}, $d->{reqid},
+	    $d->{method},
+	    $d->{resp}->code,
+	    $d->{stat}{rpbody} ? " ct:$ct" : '',
+	    $d->{stat}{rqhdr}, $d->{stat}{rqbody},
+	    $d->{stat}{rphdr}, $d->{stat}{rpbody},
+	    $d->{stat}{chunks} ? " chunks:$d->{stat}{chunks}" :'',
+	    $ce ? " ce:$ce":''
+	);
+    }
+}

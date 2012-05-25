@@ -162,6 +162,7 @@ sub _in0 {
 	$self->xdebug("create new request");
 	my $obj = $self->new_request({
 	    %{$self->{meta}},
+	    time => $time,
 	    reqid => ++$self->{lastreqid}
 	});
 	my %rq = (

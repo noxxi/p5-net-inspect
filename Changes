@@ -1,3 +1,7 @@
+0.12 2012/05/25
+- option --anon-stats for httpflow to generate statistics useful for benchmarks
+- L7::HTTP set meta.time for current request when receiving new request header
+  instead of leaving it to start of tcp connection
 0.11 2012/03/27
 - fix in L7::HTTP no valid data in request header
 0.10 2012/03/27

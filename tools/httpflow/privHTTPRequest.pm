@@ -10,7 +10,7 @@ use warnings;
 
 package privHTTPRequest;
 use base 'Net::Inspect::L7::HTTP::Request::InspectChain';
-use fields qw(outdir fcache infosub flowid flowreqid fn chunked);
+use fields qw(outdir fcache infosub flowid flowreqid fn chunked stat);
 use Net::Inspect::Debug;
 
 sub new {
@@ -28,6 +28,7 @@ sub new_request {
     $obj->{flowid} = $flowid;
     $obj->{flowreqid}  = $flowreqid;
     $obj->{fn} = [];
+    $obj->{stat} = {};
     return $obj;
 }
 
@@ -39,6 +40,8 @@ sub DESTROY {
 
 sub in_request_header {
     my ($self,$hdr,$time) = @_;
+    $self->{stat}{rqhdr} += length($hdr);
+
     if ( $self->{outdir} ) {
 	for my $dir (0,1) {
 	    my $fname = sprintf("%s/%05d.%04d.%02d-%s.%s-%s.%s-%d",
@@ -87,50 +90,94 @@ sub in_request_header {
 	    }
 	});
     } 
-    if ( my $infosub = $self->{infosub} ) {
-	my $log = sub {
-	    my ($self,$dr,$eof) = @_;
-	    $$dr = '';
-	    if ( $eof ) {
-		my $req = $self->request_header;
-		my $uri = $req->uri;
-		if ( $uri !~m{^\w+://} ) {
-		    my $host = $req->header('Host') || $self->{meta}{daddr};
-		    $uri = "http://$host$uri";
-		}
-		my $resp = $self->response_header;
-		$infosub->( 
-		    sprintf("%d %05d.%04d %s %s -> %d ct:'%s', %s",
-			$self->{meta}{time},
-			$self->{flowid},
-			$self->{flowreqid},
-			$req->method, $uri,
-			$resp->code,
-			join(' ',$resp->header('content-type')),
-			join(' ', keys %{$self->{info}}),
-		    ),
-		    {
-			meta   => $self->{meta},
-			flowid => $self->{flowid},
-			reqid  => $self->{flowreqid},
-			method => $req->method,
-			uri    => $uri,
-			req    => $req,
-			resp   => $resp,
-			info   => $self->{info},
-		    }
-		);
-	    }
-	    return '';
-	};
-	$self->add_hooks({
-	    response_body => $log,
-	    request_body  => sub { my ($self,$dr) = @_; $$dr = '' },
-	});
-    }
 
     return $self->SUPER::in_request_header($hdr,$time);
 }
+
+sub in_request_body {
+    my ($self,$data,$eof,$time) = @_;
+    $self->{stat}{rqbody} += length($data);
+    return $self->SUPER::in_request_body($data,$eof,$time);
+}
+
+sub in_response_header {
+    my ($self,$hdr,$time) = @_;
+    $self->{stat}{rphdr} += length($hdr);
+    return $self->SUPER::in_response_header($hdr,$time);
+}
+
+sub in_response_body {
+    my ($self,$data,$eof,$time) = @_;
+    $self->{stat}{rpbody} += length($data);
+    my $rv = $self->SUPER::in_response_body($data,$eof,$time);
+    if ($eof) {
+	$self->{stat}{duration} = $time - $self->{meta}{time};
+	$self->_info;
+    }
+    return $rv;
+}
+
+sub in_chunk_header {
+    my ($self,$data,$time) = @_;
+    $self->{stat}{rpbody} += length($data);
+    $self->{stat}{chunks} ++;
+    return $self->SUPER::in_chunk_header($data,$time);
+}
+
+sub in_chunk_trailer {
+    my ($self,$data,$time) = @_;
+    $self->{stat}{rpbody} += length($data);
+    return $self->SUPER::in_chunk_trailer($data,$time);
+}
+
+sub in_data {
+    my ($self,$dir,$data,$eof,$time) = @_;
+    $self->{stat}{ $dir ? 'rpbody':'rqbody' } += length($data);
+    my $rv = $self->SUPER::in_data($dir,$data,$eof,$time);
+    if ($eof>1) {
+	# both sides closed
+	$self->{stat}{duration} = $time - $self->{meta}{time};
+	$self->_info;
+    }
+    return $rv;
+}
+
+sub _info {
+    my $self = shift;
+    my $infosub = $self->{infosub} or return;
+
+    # end of data
+    my $req = $self->request_header;
+    my $uri = $req->uri;
+    if ( $uri !~m{^\w+://} ) {
+	my $host = $req->header('Host') || $self->{meta}{daddr};
+	$uri = "http://$host$uri";
+    }
+    my $resp = $self->response_header;
+    $infosub->( 
+	sprintf("%7.2f %05d.%04d %s %s -> %d ct:'%s', %s",
+	    $self->{meta}{time},
+	    $self->{flowid},
+	    $self->{flowreqid},
+	    $req->method, $uri,
+	    $resp->code,
+	    join(' ',$resp->header('content-type')),
+	    join(' ', keys %{$self->{info}}),
+	),
+	{
+	    meta   => $self->{meta},
+	    flowid => $self->{flowid},
+	    reqid  => $self->{flowreqid},
+	    method => $req->method,
+	    uri    => $uri,
+	    req    => $req,
+	    resp   => $resp,
+	    info   => $self->{info},
+	    stat   => $self->{stat},
+	}
+    );
+}
+
 
 sub fatal {
     my ($self,$reason) = @_;
