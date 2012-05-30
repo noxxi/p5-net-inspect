@@ -70,9 +70,9 @@ sub in {
 }
 
 sub fatal {
-    my ($self,$reason) = @_;
+    my ($self,$reason,$dir,$time) = @_;
     my $obj = $self->{fwd} or return;
-    return $obj->fatal($reason);
+    return $obj->fatal($reason,$dir,$time);
 }
 
 
@@ -132,7 +132,7 @@ Hooks provided:
 forwarded to protocol implementing object if it is already found.
 Otherwise calls C<guess_protocol> and C<< length($data) >>.
 
-=item fatal($reason)
+=item fatal($reason,$time)
 
 forwarded to protocol implementing object
 

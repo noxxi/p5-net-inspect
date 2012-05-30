@@ -56,7 +56,7 @@ sub in_data {
 }
 
 sub fatal {
-    my ($self,$reason) = @_;
+    my ($self,$reason,$dir,$time) = @_;
     warn "FATAL: $reason\n";
 }
 
@@ -64,7 +64,6 @@ sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
     return
 }
-
 
 1;
 __END__

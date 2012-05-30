@@ -15,12 +15,12 @@ use Net::Inspect::Debug qw( debug trace );
 # [ \@d0,\@d1,$conn ]
 #   $conn - connection object
 #   \@d0,\@d1 - information about data from client(0) or server(1).
-#      [$sn,\%pkt,$buf,$state]
+#      [$sn,\%pkt,\@buf,$state]
 #        $sn - all packets received up to this sequence number
-#        \%pkt - packets which are not added to $buf (out of order, missing
-#          packet in between).
-#        $buf - data which are not yet forwarded to attached flows
-#        $state: bitmask ( 0b0000FfSs : Fin+ack|Fin|Syn+ack|Syn)
+#        \%pkt - packets which are not added to \@buf (out of order, missing
+#          packet in between): sn -> [pkt,time]
+#        \@buf - ordered data which are not yet forwarded to attached flows [pkt,time]
+#        $state - bitmask ( 0b0000FfSs : Fin+ack|Fin|Syn+ack|Syn)
 
 sub new {
     my ($class,$flow) = @_;
@@ -129,7 +129,7 @@ sub pktin {
     if ( $buf ne '' or $fin ) {
 
 	# add buf to packets
-	$conn->[$dir][1]{$sn} = $buf if $buf ne '';
+	$conn->[$dir][1]{$sn} = [$buf,$meta->{time}] if $buf ne '';
 
 	# set FIN flag - no more data expected from peer after this point
 	# but outstanding packets might still come in
@@ -138,7 +138,7 @@ sub pktin {
 		debug("shutdown dir $dir $saddr.$sport -> $daddr.$dport");
 		$conn->[$dir][3] |= 0b0100; # fin received
 		# must increase sn for ACK
-		$conn->[$dir][1]{ ( $sn+length($buf) ) % 2**32  } = undef;
+		$conn->[$dir][1]{ ( $sn+length($buf) ) % 2**32  } = [ '',$meta->{time} ];
 	    } else {
 		# probably duplicate
 		debug("ignore duplicate FIN($dir) $saddr.$sport -> $daddr.$dport");
@@ -153,21 +153,44 @@ sub pktin {
 	# reorder and concat packets up to acknowledged value and forward
 	# to attached flows
 	my $pkts = $conn->[$odir][1];
+	my $eof = 0;
 	if ( %$pkts ) {
-	    my @buf;
-	    my $xsn = $conn->[$odir][0];
-	    my $eof = 0;
-	    while ( $xsn != $asn and exists $pkts->{$xsn} ) {
+	    my $xsn  = $conn->[$odir][0];
+	    my $obuf = $conn->[$odir][2];
+	    while ( $xsn != $asn and $pkts->{$xsn} ) {
 		my $pkt = delete $pkts->{$xsn};
-		if ( defined $pkt ) {
-		    push @buf,$pkt;
-		    $xsn = ( $xsn + length($pkt)) % 2**32;
+		# merge packets which came later but are earlier in the stream
+		# into $pkt
+		while (@$obuf) {
+		    last if $obuf->[-1][1] < $pkt->[1]; # earlier in time
+		    $pkt->[0] = pop(@$obuf)->[0].$pkt->[0];
+		}
+		push @$obuf,$pkt;
+
+		if ( $pkt->[0] ne '' ) {
+		    $xsn = ( $xsn + length($pkt->[0])) % 2**32;
+
 		} else {
-		    # undef means FIN, there should be no more packets
-		    # after this
-		    $xsn = ( $xsn + 1 ) % 2**32;
-		    $eof = 1;
 		    debug("got ACK for FIN($odir)");
+		    $xsn = ( $xsn + 1 ) % 2**32;
+
+		    # eof - set to 2 if both sides closed
+		    $eof = $conn->[$dir][3] & 0b1000 ? 2:1;
+
+		    # upper flow needs to process all remaining data on eof, so
+		    # pack them together
+		    if (@$obuf>1) {
+			$pkt = shift(@$obuf);
+			$pkt->[0] .= $_->[0] for(@$obuf);
+			@$obuf = $pkt;
+		    }
+
+		    # ignore data after fin
+		    if ( %$pkts) {
+			trace("ignoring packets after FIN($odir) $saddr.$sport -> $daddr.$dport");
+			%$pkts = ();
+		    }
+
 		    last;
 		}
 	    }
@@ -178,44 +201,44 @@ sub pktin {
 		delete $self->{conn}{$saddr,$sport,$daddr,$dport};
 		if ( my $obj = $conn->[2] ) {
 		    $obj->fatal( "lost packets before ACK($odir)=$asn",
-			$meta->{time});
+			$dir,$meta->{time});
 		}
-		return 1;
-	    }
-
-	    # data after fin
-	    if ( $eof and %$pkts ) {
-		trace("ignoring packets after FIN($odir) $saddr.$sport -> $daddr.$dport");
-		%$pkts = ();
 		return 1;
 	    }
 
 	    # update sn etc
 	    $conn->[$odir][0] = $xsn;
-	    $conn->[$odir][2] .= join('',@buf);
 	    $conn->[$odir][3] |= 0b1000 if $eof;
 
-	    # forward data
+	    # forward data 
 	    if ( my $obj = $conn->[2] ) {
-		# set eof to 2 to signal that both sides are closed
-		$eof = 2 if $eof and $conn->[$dir][3] & 0b1000;
-		my $n = $obj->in($odir,$conn->[$odir][2],$eof,$meta->{time});
-		if ( ! defined $n ) {
-		    # error processing -> close
-		    # don't call fatal, hook probably reported error already
-		    trace("error processing data in hook in $saddr.$sport -> $daddr.$dport");
-		    delete $self->{conn}{$saddr,$sport,$daddr,$dport};
-		    return 1;
-		} elsif ( $n>0 ) {
-		    # strip all processed bytes from buffer
-		    substr($conn->[$odir][2],0,$n) = '';
-		    debug("keep %d bytes in buffer for $odir",length($conn->[$odir][2]))
-			if length($conn->[$odir][2]);
+		while ( my $buf = shift(@$obuf) ) {
+		    my $n = $obj->in($odir,$buf->[0],$eof,$buf->[1]);
+
+		    if ( ! defined $n ) {
+			# error processing -> close
+			# don't call fatal, hook probably reported error already
+			trace("error processing data in hook in $saddr.$sport -> $daddr.$dport");
+			delete $self->{conn}{$saddr,$sport,$daddr,$dport};
+			return 1;
+		    } elsif ( $n == length($buf->[0]) ) {
+			# everything processed
+			next;
+		    } elsif ( $eof ) {
+			$obj->fatal("handler did not eat all data on eof",$dir,$meta->{time});
+			return 1;
+		    }  else {
+			# keep bytes in $buf which were not processed
+			substr($buf->[0],0,$n,'');
+			debug("keep %d bytes in buffer for $odir",length($buf->[1]));
+			unshift @$obuf,$buf;
+			last;
+		    }
 		}
 	    }
 
 	    # eof: if other side fin+acked too reap connection
-	    if ( $eof and $conn->[$dir][3] & 0b1000 ) {
+	    if ( $eof == 2 ) {
 		debug("connection  $saddr.$sport -> $daddr.$dport closed");
 		delete $self->{conn}{$saddr,$sport,$daddr,$dport};
 		return 1;
@@ -350,7 +373,10 @@ the hook will be called again with all unprocessed data.
 If C<$eof> is true it should better process all data, because the hook will not
 be called again for this direction.
 
-=item fatal($reason,$time)
+C<$time> is the time, when the data arrived. If the data arrived at different
+times (like after reordering) the earliest time gets used.
+
+=item fatal($reason,$dir,$time)
 
 Will be called on fatal errors of the connection, e.g. lost packets.
 

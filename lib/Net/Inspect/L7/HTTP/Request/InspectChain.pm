@@ -65,8 +65,8 @@ sub new {
 
 # forward fatal to connection
 sub fatal {
-    my ($self,$reason) = @_;
-    return $self->{conn}->fatal($self->{meta}{reqid}.' '.$reason);
+    my ($self,$reason,$dir,$time) = @_;
+    return $self->{conn}->fatal($self->{meta}{reqid}.' '.$reason,$dir,$time);
 }
 
 sub xdebug {
@@ -409,7 +409,7 @@ sub _rphdr_uncompress_ce {
 
     if ( $hdr->header('Content-Range')) {
 	# should not happen, we blocked it!
-	$self->fatal('got content-range header with compression');
+	$self->fatal('got content-range header with compression',1,$time);
 	return;
     }
     if ( $ce ne '' ) {
@@ -568,7 +568,7 @@ sub _rpbody_uncompress {
 	    $zlib->{gzip_csum} = ''
 	}
     } elsif ( $stat != Z_OK ) {
-	$self->fatal("bad status $stat while inflating stream");
+	$self->fatal("bad status $stat while inflating stream",1,$time);
 	return;
     }
     return $data

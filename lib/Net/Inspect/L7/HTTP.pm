@@ -16,6 +16,7 @@ use fields (
     'upgrade',  # true if got upgrade, CONNECT, WebSockets..
     'connid',   # connection id
     'lastreqid',# id of last request
+    'offset',   # offset in data stream 
 );
 
 
@@ -91,6 +92,7 @@ sub guess_protocol {
 	$obj->{requests} = [];
 	$obj->{connid} = ++$connid;
 	$obj->{lastreqid} = 0;
+	$obj->{offset} = [0,0];
 	return $obj;
     }
 }
@@ -103,6 +105,11 @@ sub in {
 	: _in1($self,$data,$eof,$time);
     #$self->dump_state if $DEBUG;
     return $bytes;
+}
+
+sub offset {
+    my ($self,$dir) = @_;
+    return $self->{offset}[$dir];
 }
 
 # process request data
@@ -119,8 +126,14 @@ sub _in0 {
     }
 
     if ($self->{upgrade}) {
-	my $obj = $rqs->[0]{obj} or return $bytes+length($data);
-	return $bytes + $obj->in_data(0,$data,$eof,$time);
+	my $n;
+	if ( my $obj = $rqs->[0]{obj} ) {
+	    $n = $obj->in_data(0,$data,$eof,$time);
+	} else {
+	    $n = length($data);
+	}
+	$self->{offset}[0] += $n;
+	return $bytes + $n;
     }
 
     if (@$rqs and $rqs->[0]{state} & RQ_ERROR ) {
@@ -134,8 +147,10 @@ sub _in0 {
 	# first request or previous request body done
 	# new request might follow but maybe we only have trailing lines after
 	# the last request: eat empty lines
-	$bytes += pos($data);
-	substr($data,0,pos($data),'');
+	my $n = pos($data);
+	$bytes += $n;
+	$self->{offset}[0] += $n;
+	substr($data,0,$n,'');
 	$self->xtrace("eat empty lines before request header");
     }
 
@@ -148,7 +163,7 @@ sub _in0 {
 	if ( @$rqs and not $rqs->[0]{state} & RQBDY_DONE ) {
 	    # request body not done yet
 	    ($rqs->[0]{obj}||$self)->xtrace("request body not done but eof");
-	    ($rqs->[0]{obj}||$self)->fatal('eof but request body not done');
+	    ($rqs->[0]{obj}||$self)->fatal('eof but request body not done',0,$time);
 	    $rqs->[0]{state} |= RQ_ERROR;
 	    return $bytes;
 	}
@@ -195,8 +210,10 @@ sub _in0 {
 	    $rq->{method} = $2;
 	    $rq->{info} = "$2 $3 HTTP/$4";
 	    $self->xdebug("got request header $rq->{info}");
-	    $bytes += pos($data);
-	    substr($data,0,pos($data),'');
+	    my $n = pos($data);
+	    $self->{offset}[0] += $n;
+	    $bytes += $n;
+	    substr($data,0,$n,'');
 	    $rq->{state} |= RQHDR_DONE; # rqhdr done
 
 	    my %kv = _parse_hdrfields(\$kv,$obj||$self);
@@ -205,7 +222,8 @@ sub _in0 {
 	    if ( my $cl = $kv{'content-length'} ) {
 		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
 		    ($obj||$self)->fatal(
-			"multiple different content-length header in request");
+			"multiple different content-length header in request",
+			0,$time);
 		    $rq->{state} |= RQ_ERROR;
 		    return $bytes;
 		}
@@ -217,7 +235,7 @@ sub _in0 {
 	    if ( $rq->{method} =~m{^(?:HEAD|GET|CONNECT)$} ) {
 		if ( $rq->{rqclen} ) {
 		    ($obj||$self)->fatal(
-			"no body allowed with method $rq->{method}");
+			"no body allowed with method $rq->{method}",0,$time);
 		    $rq->{state} |= RQ_ERROR;
 		    return $bytes;
 		}
@@ -239,15 +257,15 @@ sub _in0 {
 
 	} elsif ( $data =~m{[^\n]\r?\n\r?\n}g ) {
 	    ($obj||$self)->fatal( sprintf("invalid request header syntax '%s'",
-		substr($data,0,pos($data))));
+		substr($data,0,pos($data))),0,$time);
 	    $rq->{state} |= RQ_ERROR;
 	    return $bytes;
 	} elsif ( length($data) > 2**16 ) {
-	    ($obj||$self)->fatal('request header too big');
+	    ($obj||$self)->fatal('request header too big',0,$time);
 	    $rq->{state} |= RQ_ERROR;
 	    return $bytes;
 	} elsif ( $eof ) {
-	    ($obj||$self)->fatal('eof in request header');
+	    ($obj||$self)->fatal('eof in request header',0,$time);
 	    return $bytes;
 	} else {
 	    # will be called on new data from upper flow
@@ -265,6 +283,7 @@ sub _in0 {
 		"got all request body data $l >= $rq->{rqclen} obj=$obj");
 	    # got all request body
 	    my $body = substr($data,0,$rq->{rqclen},'');
+	    $self->{offset}[0] += $rq->{rqclen};
 	    $bytes += $rq->{rqclen};
 	    $rq->{rqclen} = 0;
 	    $rq->{state} |= RQBDY_DONE; # req body done
@@ -273,6 +292,7 @@ sub _in0 {
 	    $self->xdebug("got part of request body data $l < $rq->{rqclen}");
 	    # only part
 	    my $body = substr($data,0,$l,'');
+	    $self->{offset}[0] += $l;
 	    $bytes += $l;
 	    $rq->{rqclen} -= $l;
 	    $obj->in_request_body($body,0,$time) if $obj;
@@ -294,8 +314,15 @@ sub _in1 {
     return $bytes if $self->{error};
 
     if ($self->{upgrade}) {
-	my $obj = $rqs->[0]{obj} or return $bytes+length($data);
-	return $bytes + $obj->in_data(1,$data,$eof,$time);
+	my $n;
+	if ( my $obj = $rqs->[0]{obj} ) {
+	    $n = $obj->in_data(1,$data,$eof,$time);
+	} else {
+	    $n = length($data);
+	}
+	$self->{offset}[1] += $n;
+	return $bytes + $n;
+
     }
 
     if ( $data eq '' ) {
@@ -313,7 +340,8 @@ sub _in1 {
 	if ( @$rqs ) {
 	    # response body not done yet
 	    ($rqs->[-1]{obj}||$self)->xtrace("response body not done but eof");
-	    ($rqs->[-1]{obj}||$self)->fatal('eof but response body not done');
+	    ($rqs->[-1]{obj}||$self)->fatal('eof but response body not done',
+		1,$time);
 	    pop(@$rqs);
 	    return $bytes;
 	}
@@ -322,7 +350,7 @@ sub _in1 {
     }
 
     if ( ! @$rqs ) {
-	$self->fatal('data from server w/o request');
+	$self->fatal('data from server w/o request',1,$time);
 	$self->{error} = 1;
 	return $bytes;
     }
@@ -340,8 +368,10 @@ sub _in1 {
 	    (\r?\n)                                         # empty line
 	}xg) {
 	    my ($first,$code,$kv,$empty) = ($1,$2,$3,$4);
-	    $bytes += pos($data);
-	    substr($data,0,pos($data),'');
+	    my $n = pos($data);
+	    $self->{offset}[1] += $n;
+	    $bytes += $n;
+	    substr($data,0,$n,'');
 	    $rq->{state} |= RPHDR_DONE; # response header done
 
 	    my %kv = _parse_hdrfields(\$kv,$obj||$self);
@@ -350,7 +380,8 @@ sub _in1 {
 	    if ( my $cl = $kv{'content-length'} ) {
 		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
 		    ($obj||$self)->fatal(
-			"multiple different content-length header in request");
+			"multiple different content-length header in request",
+			1,$time);
 		    $self->{error} = 1;
 		    return $bytes;
 		}
@@ -397,15 +428,15 @@ sub _in1 {
 
 	} elsif ( $data =~m{[^\n]\r?\n\r?\n}g ) {
 	    ($obj||$self)->fatal( sprintf("invalid response header syntax '%s'",
-		substr($data,0,pos($data))));
+		substr($data,0,pos($data))),1,$time);
 	    $self->{error} = 1;
 	    return $bytes;
 	} elsif ( length($data) > 2**16 ) {
-	    ($obj||$self)->fatal('response header too big');
+	    ($obj||$self)->fatal('response header too big',1,$time);
 	    $self->{error} = 1;
 	    reurn $bytes;
 	} elsif ( $eof ) {
-	    ($obj||$self)->fatal('eof in response header');
+	    ($obj||$self)->fatal('eof in response header',1,$time);
 	} else {
 	    # will be called on new data from upper flow
 	    $self->xdebug("need more data for response header");
@@ -427,6 +458,7 @@ sub _in1 {
 		$self->xdebug("need $want bytes, got all($l)");
 		# got all response body
 		my $body = substr($data,0,$want,'');
+		$self->{offset}[1] += $want;
 		$bytes += $want;
 		$rq->{rpclen} = 0;
 		if ( ! $rq->{rpchunked} ) {
@@ -442,6 +474,7 @@ sub _in1 {
 		# only part
 		$self->xdebug("need $want bytes, got only $l");
 		my $body = substr($data,0,$l,'');
+		$self->{offset}[1] += $l;
 		$bytes += $l;
 		$rq->{rpclen} -= $l;
 		$obj->in_response_body($body,0,$time) if $obj;
@@ -451,6 +484,7 @@ sub _in1 {
 	} elsif ( ! $rq->{rpchunked} ) {
 	    $self->xdebug("read until eof");
 	    $obj->in_response_body($data,$eof,$time) if $obj;
+	    $self->{offset}[1] += length($data);
 	    $bytes += length($data);
 	    $data = '';
 	    pop(@$rqs) if $eof; # request done
@@ -462,12 +496,14 @@ sub _in1 {
 	    if ( $rq->{rpchunked} == 2 ) {
 		$self->xdebug("want CRLF after chunk");
 		if ( $data =~m{\A\r?\n}g ) {
-		    $bytes += pos($data);
-		    substr($data,0,pos($data),'');
+		    my $n = pos($data);
+		    $self->{offset}[1] += $n;
+		    $bytes += $n;
+		    substr($data,0,$n,'');
 		    $rq->{rpchunked} = 1; # get next chunk header
 		    $self->xdebug("got CRLF after chunk");
 		} elsif ( length($data)>=2 ) {
-		    ($obj||$self)->fatal("no CRLF after chunk");
+		    ($obj||$self)->fatal("no CRLF after chunk",1,$time);
 		    $self->{error} = 1;
 		    return $bytes;
 		} else {
@@ -482,6 +518,7 @@ sub _in1 {
 		if ( $data =~m{\A([\da-fA-F]+)[ \t]*(?:;.*)?\r?\n}g ) {
 		    $rq->{rpclen} = hex($1);
 		    my $chdr = substr($data,0,pos($data),'');
+		    $self->{offset}[1] += length($chdr);
 		    $bytes += length($chdr);
 		    $obj->in_chunk_header($chdr,$time) if $obj;
 		    $self->xdebug(
@@ -492,7 +529,7 @@ sub _in1 {
 			$obj->in_response_body('',1,$time) if $obj;
 		    }
 		} elsif ( $data =~m{\n} or length($data)>8192 ) {
-		    ($obj||$self)->fatal("invalid chunk header");
+		    ($obj||$self)->fatal("invalid chunk header",1,$time);
 		    $self->{error} = 1;
 		    return $bytes;
 		} else {
@@ -510,12 +547,13 @@ sub _in1 {
 		}xg) {
 		    $self->xdebug("got chunk trailer");
 		    my $trailer = substr($data,0,pos($data),'');
+		    $self->{offset}[1] += length($trailer);
 		    $bytes += length($trailer);
 		    $obj->in_chunk_trailer($trailer,$time) if $obj;
 		    pop(@$rqs); # request done
 		    goto READ_DATA;
 		} elsif ( $data =~m{\n\r?\n} or length($data)>2**16 ) {
-		    ($obj||$self)->fatal("invalid chunk trailer");
+		    ($obj||$self)->fatal("invalid chunk trailer",1,$time);
 		    $self->{error} = 1;
 		    return $bytes;
 		} else {
@@ -558,7 +596,7 @@ sub new_request {
 }
 
 sub fatal {
-    my ($self,$reason) = @_;
+    my ($self,$reason,$dir,$time) = @_;
     $self->xtrace($reason);
 }
 
@@ -628,7 +666,7 @@ Hooks provided:
 
 =item $connection->in($dir,$data,$eof,$time)
 
-=item $connection->fatal($reason)
+=item $connection->fatal($reason,$dir,$time)
 
 =back
 
@@ -688,7 +726,7 @@ Will be called after in_response_body got called with eof true.
 Will be called for any data after successful CONNECT or Upgrade, Websockets...
 C<$dir> is 0 for data from client, 1 for data from server.
 
-=item $request->fatal($reason)
+=item $request->fatal($reason,$dir,$time)
 
 will be called on fatal errors, mostly protocol iregularities.
 
@@ -711,6 +749,14 @@ Helpful methods
 =item $connection->dump_state
 
 dumps the state of the open connections via xdebug
+
+=item $connection->offset($dir)
+
+returns the current offset in the data stream.
+For structures which need to be found by the HTTP connection parser this will be
+the offset after the structure (e.g. request and response headers, chunk headers
+and trailers), for other data (body, connection upgrades) this will be the
+offset before the structure.
 
 =back
 
