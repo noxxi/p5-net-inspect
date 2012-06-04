@@ -6,12 +6,15 @@ use strict;
 use warnings;
 package Net::Inspect::L7::HTTP::Request::Simple;
 use base 'Net::Inspect::Flow';
-use fields qw(meta chunked);
+use fields qw(conn meta chunked);
+use Net::Inspect::Debug qw($DEBUG debug trace);
+use Scalar::Util 'weaken';
 
 sub new_request {
-    my ($self,$meta) = @_;
+    my ($self,$meta,$conn) = @_;
     my $obj = $self->new;
     $obj->{meta} = $meta;
+    weaken($obj->{conn} = $conn);
     return $obj;
 }
 
@@ -64,6 +67,24 @@ sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
     return
 }
+
+sub xdebug {
+    $DEBUG or return;
+    my $self = shift;
+    my $msg = shift;
+    $msg = "$$.$self->{conn}{connid}.$self->{meta}{reqid} $msg";
+    unshift @_,$msg;
+    goto &debug;
+}
+
+sub xtrace {
+    my $self = shift;
+    my $msg = shift;
+    $msg = "$$.$self->{conn}{connid}.$self->{meta}{reqid} $msg";
+    unshift @_,$msg;
+    goto &trace;
+}
+
 
 1;
 __END__

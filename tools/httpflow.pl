@@ -19,6 +19,7 @@ use Net::Inspect::L5::GuessProtocol;
 use Net::Inspect::L7::HTTP;
 use Net::Inspect::L5::NoData;
 use Net::Inspect::L5::Unknown;
+use Net::Inspect::L5::Socks;
 use Net::Inspect::Debug qw(:DEFAULT %TRACE $DEBUG);
 
 use privHTTPConn;
@@ -147,6 +148,14 @@ for my $infile (@infile ? @infile : undef ) {
     $guess->attach($http_conn);
     $guess->attach($null);
     $guess->attach($fallback);
+
+    # detect socks encapsulation
+    my $guess2 = Net::Inspect::L5::GuessProtocol->new;
+    my $socks = Net::Inspect::L5::Socks->new($guess2);
+    $guess2->attach($http_conn);
+    $guess2->attach($null);
+    $guess2->attach($fallback);
+    $guess->attach($socks);
 
 
     # ------------------------------------------------------------------------ 

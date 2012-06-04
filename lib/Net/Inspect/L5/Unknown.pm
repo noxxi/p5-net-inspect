@@ -10,10 +10,10 @@ use fields qw(replay);
 use Net::Inspect::Debug;
 
 sub guess_protocol {
-    my ($self,$guess,$dir,$data,$time,$meta) = @_;
+    my ($self,$guess,$dir,$data,$eof,$time,$meta) = @_;
 
     # keep all calls for replaying later
-    push @{ $self->{replay} ||=[] },[$dir,$data,$time];
+    push @{ $self->{replay} ||=[] },[$dir,$data,$eof,$time];
 
     $guess->attached == 1 or return; # let others try first
 
@@ -38,7 +38,12 @@ sub new_connection {
 sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
     $self->{expire} = $time + 500;
-    return; # ignores
+    return length($data); # ignores
+}
+
+sub fatal {
+    my ($self,$reason,$dir,$time) = @_;
+    trace($reason);
 }
 
 1;

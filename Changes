@@ -1,3 +1,13 @@
+0.14 2012/06/04
+- Socks4 encapsulation
+  - Net::Inspect::L5::Socks4
+  - including autodetect
+  - support in httpflow to detect http requests inside socks connections
+- bugfixes related to 0.13
+0.13 2012/05/30
+- L4::TCP: use as time in call of in() the arliest time in the data
+- TCP and above: added dir and time to fatal handlers
+- L7::HTTP: method offset to get position in stream
 0.12 2012/05/25
 - option --anon-stats for httpflow to generate statistics useful for benchmarks
 - L7::HTTP set meta.time for current request when receiving new request header

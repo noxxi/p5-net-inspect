@@ -9,6 +9,7 @@ lib/Net/Inspect/L4/UDP.pm
 lib/Net/Inspect/L5/GuessProtocol.pm
 lib/Net/Inspect/L5/NoData.pm
 lib/Net/Inspect/L5/Unknown.pm
+lib/Net/Inspect/L5/Socks.pm
 lib/Net/Inspect/L7/HTTP.pm
 lib/Net/Inspect/L7/HTTP/Request/InspectChain.pm
 lib/Net/Inspect/L7/HTTP/Request/Simple.pm

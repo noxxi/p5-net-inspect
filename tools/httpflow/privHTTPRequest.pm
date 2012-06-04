@@ -23,10 +23,10 @@ sub new {
     return $self;
 }
 sub new_request {
-    my ($self,$meta,$conn,$flowid,$flowreqid) = @_;
+    my ($self,$meta,$conn) = @_;
     my $obj = $self->SUPER::new_request($meta,$conn);
-    $obj->{flowid} = $flowid;
-    $obj->{flowreqid}  = $flowreqid;
+    $obj->{flowid} = $conn->{connid};
+    $obj->{flowreqid}  = $meta->{reqid},
     $obj->{fn} = [];
     $obj->{stat} = {};
     return $obj;

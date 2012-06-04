@@ -153,3 +153,7 @@ sub pktin {
     }
 }
 
+sub fatal {
+    my ($self,$reason) = @_;
+    warn "fatal: $reason\n";
+}

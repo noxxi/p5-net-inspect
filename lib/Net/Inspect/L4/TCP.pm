@@ -109,7 +109,7 @@ sub pktin {
 
 	# dok for structure see top of file
 	if ( ! $conn ) {
-	    $conn = [ [ undef,{},'',0], [ undef,{},'',0], undef ];
+	    $conn = [ [ undef,{},[],0], [ undef,{},[],0], undef ];
 	    # register new connection
 	    debug("register conn $saddr.$sport -> $daddr.$dport $conn");
 	    $self->{conn}{$saddr,$sport,$daddr,$dport} = $conn;
@@ -197,10 +197,10 @@ sub pktin {
 
 	    # lost packets or ack points in the middle of packet
 	    if ( $xsn != $asn ) {
-		trace("lost packets before ACK($odir)=$asn $saddr.$sport -> $daddr.$dport");
+		trace("lost packets before ACK($odir)=$asn SN($odir)=$xsn $saddr.$sport -> $daddr.$dport");
 		delete $self->{conn}{$saddr,$sport,$daddr,$dport};
 		if ( my $obj = $conn->[2] ) {
-		    $obj->fatal( "lost packets before ACK($odir)=$asn",
+		    $obj->fatal( "lost packets before ACK($odir)=$asn, SN($odir)=$xsn",
 			$dir,$meta->{time});
 		}
 		return 1;
