@@ -126,14 +126,11 @@ sub _in0 {
     }
 
     if ($self->{upgrade}) {
-	my $n;
+	$self->{offset}[0] += length($data);
 	if ( my $obj = $rqs->[0]{obj} ) {
-	    $n = $obj->in_data(0,$data,$eof,$time);
-	} else {
-	    $n = length($data);
+	    $obj->in_data(0,$data,$eof,$time);
 	}
-	$self->{offset}[0] += $n;
-	return $bytes + $n;
+	return $bytes + length($data);
     }
 
     if (@$rqs and $rqs->[0]{state} & RQ_ERROR ) {
@@ -314,15 +311,11 @@ sub _in1 {
     return $bytes if $self->{error};
 
     if ($self->{upgrade}) {
-	my $n;
+	$self->{offset}[1] += length($data);
 	if ( my $obj = $rqs->[0]{obj} ) {
-	    $n = $obj->in_data(1,$data,$eof,$time);
-	} else {
-	    $n = length($data);
+	    $obj->in_data(1,$data,$eof,$time);
 	}
-	$self->{offset}[1] += $n;
-	return $bytes + $n;
-
+	return $bytes + length($data);
     }
 
     if ( $data eq '' ) {
@@ -369,8 +362,8 @@ sub _in1 {
 	}xg) {
 	    my ($first,$code,$kv,$empty) = ($1,$2,$3,$4);
 	    my $n = pos($data);
-	    $self->{offset}[1] += $n;
 	    $bytes += $n;
+	    $self->{offset}[1] += $n;
 	    substr($data,0,$n,'');
 	    $rq->{state} |= RPHDR_DONE; # response header done
 
@@ -483,10 +476,10 @@ sub _in1 {
 	# no content-length, no chunk: must read until eof
 	} elsif ( ! $rq->{rpchunked} ) {
 	    $self->xdebug("read until eof");
-	    $obj->in_response_body($data,$eof,$time) if $obj;
 	    $self->{offset}[1] += length($data);
 	    $bytes += length($data);
 	    $data = '';
+	    $obj->in_response_body($data,$eof,$time) if $obj;
 	    pop(@$rqs) if $eof; # request done
 	    return $bytes;
 
@@ -752,11 +745,8 @@ dumps the state of the open connections via xdebug
 
 =item $connection->offset($dir)
 
-returns the current offset in the data stream.
-For structures which need to be found by the HTTP connection parser this will be
-the offset after the structure (e.g. request and response headers, chunk headers
-and trailers), for other data (body, connection upgrades) this will be the
-offset before the structure.
+returns the current offset in the data stream, that is the position
+behind the within the in_* methods forwarded data.
 
 =back
 
