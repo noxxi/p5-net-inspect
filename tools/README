@@ -31,3 +31,8 @@ responses. Can unchunk, uncompress data before inspecting/modifying them.
 
 small tool to demonstrate how to capture live http requests and show
 the headers
+
+==== unsocksify-pcap.pl
+
+finds socks4 connection in source pcap, and extracts them unsocksified into
+new pcap

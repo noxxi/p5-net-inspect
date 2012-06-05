@@ -1,3 +1,6 @@
+0.15 2012/06/05
+- added tool tools/unsocksify-pcap.pl to extract and unsocksify socks4
+  connections from one pcap into another
 0.14 2012/06/04
 - Socks4 encapsulation
   - Net::Inspect::L5::Socks4
