@@ -8,6 +8,7 @@ package Net::Inspect::L7::HTTP;
 use base 'Net::Inspect::Flow';
 use Net::Inspect::Debug qw(:DEFAULT $DEBUG);
 use Hash::Util 'lock_keys';
+use Carp 'croak';
 use fields (
     'replay',   # collected and replayed in guess_protocol
     'meta',     # meta data from connection
@@ -117,6 +118,26 @@ sub _in0 {
     my ($self,$data,$eof,$time) = @_;
     my $bytes = 0; # processed bytes
     my $rqs = $self->{requests};
+
+    if ( ref($data)) {
+	# process gap in request data
+	croak "unknown type $data->[0]" if $data->[0] ne 'gap';
+	my $len = $data->[1];
+
+	croak 'existing error in connection' if $self->{error};
+	croak 'upgraded connections do not support gaps' if $self->{upgrade};
+
+	my $rqs = $self->{requests};
+	croak 'no open request' if ! @$rqs or $rqs->[0]{state} & RQBDY_DONE;
+	croak 'existing error in request' if $rqs->[0]{state} & RQ_ERROR;
+	croak "gap wider than request body" if $rqs->[0]{rqclen} < $len;
+	if ( my $obj = $rqs->[0]{obj} ) {
+	    $obj->in_request_body([ gap => $len ],$eof,$time);
+	}
+	$rqs->[0]{rqclen} -= $len;
+	$rqs->[0]{state} |= RQBDY_DONE if ! $rqs->[0]{rqclen};
+	return $len;
+    }
 
     READ_DATA:
 
@@ -299,12 +320,40 @@ sub _in0 {
     goto READ_DATA;
 }
 
+
+
 # process response data
 sub _in1 {
     my ($self,$data,$eof,$time) = @_;
 
     my $rqs = $self->{requests};
     my $bytes = 0; # processed bytes
+
+    if ( ref($data)) {
+	# process gap in response data
+	croak "unknown type $data->[0]" if $data->[0] ne 'gap';
+	my $len = $data->[1];
+
+	croak 'existing error in connection' if $self->{error};
+	croak 'upgraded connections do not support gaps' if $self->{upgrade};
+
+	my $rqs = $self->{requests};
+	croak 'no open response' if ! @$rqs;
+	croak 'existing error in request' if $rqs->[-1]{state} & RQ_ERROR;
+	if ( ! defined $rqs->[-1]{rpclen} ) {
+	    croak "not in body-til-eof"  if not $rqs->[-1]{state} & RPBDY_DONE;
+	} elsif ( $rqs->[-1]{rpclen} < $len ) {
+	    croak "gap ($len) wider than response body (chunk) $rqs->[-1]{rpclen}";
+	} elsif ( my $obj = $rqs->[-1]{obj} ) {
+	    $obj->in_response_body([ gap => $len ],$eof,$time);
+	}
+	$rqs->[-1]{rqclen} -= $len;
+	if ( ! $rqs->[-1]{rqclen} && !  $rqs->[-1]{rpchunked} ) {
+	    $rqs->[-1]{state} |= RPBDY_DONE;
+	}
+	return $len;
+    }
+
 
     READ_DATA:
 
@@ -659,6 +708,18 @@ Hooks provided:
 
 =item $connection->in($dir,$data,$eof,$time)
 
+$data are the data as string.
+
+In some cases $data can be C<<[ 'gap' => $len ]>>, e.g. only the information,
+that there would be C<$len> bytes of data w/o submitting the data. These
+should only be submitted in request and response bodies and only if the 
+attached layer can handle these gaps in the C<in_request_body> and 
+C<in_response_body> methods. 
+
+Gaps on other places are not allowed, because all other data are needed 
+for interpreting the placement of request, response and data inside the
+connection.
+
 =item $connection->fatal($reason,$dir,$time)
 
 =back
@@ -692,6 +753,9 @@ $eof is true if this is the last chunk.
 If no request body is given it will be once called with '' as data,
 except for CONNECT, Upgrade etc where there cannot be a body.
 
+$data can be C<<[ 'gap' => $len ]>> if the input to this
+layer were gaps.
+
 =item $request->in_response_body($data,$eof,$time)
 
 Called for a chunk of data of the response body.
@@ -699,6 +763,9 @@ $eof is true if this is the last chunk.
 It will be called with data '' and eof true if no body is given or if the last
 chunk of chunked encoding was found, except for CONNECT, Upgrade etc where there
 cannot be a body.
+
+$data can be C<<[ 'gap' => $len ]>> if the input to this
+layer were gaps.
 
 =item $request->in_chunk_header($header,$time)
 

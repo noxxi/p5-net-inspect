@@ -9,6 +9,7 @@ use base 'Net::Inspect::Flow';
 use fields qw(conn meta chunked);
 use Net::Inspect::Debug qw($DEBUG debug trace);
 use Scalar::Util 'weaken';
+use Carp 'croak';
 
 sub new_request {
     my ($self,$meta,$conn) = @_;
@@ -26,6 +27,7 @@ sub in_request_header {
 
 sub in_request_body {
     my ($self,$data,$eof,$time) = @_;
+    croak "gaps not supported in_request_body" if ref($data);
     return $self->in(0,$data,$eof&&1,$time);
 }
 
@@ -36,6 +38,7 @@ sub in_response_header {
 
 sub in_response_body {
     my ($self,$data,$eof,$time) = @_;
+    croak "gaps not supported in_response_body" if ref($data);
     return $self->in(1,$data,$eof&&2,$time);
 }
 

@@ -241,6 +241,7 @@ sub in_response_header {
 
 sub in_request_body {
     my ($self,$data,$eof,$time) = @_;
+    croak "gaps not supported in_request_body" if ref($data);
     my $bytes = length($data);
     my $hooks = $self->{hooks}{request_body};
     my $lasthook;
@@ -276,6 +277,7 @@ sub in_request_body {
 
 sub in_response_body {
     my ($self,$data,$eof,$time) = @_;
+    croak "gaps not supported in_response_body" if ref($data);
     my $bytes = length($data);
     my $hooks = $self->{hooks}{response_body};
     my $lasthook;
