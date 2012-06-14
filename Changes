@@ -1,3 +1,5 @@
+0.18 2012/06/14
+- fixed detach inside Socks::guess_protocol, flow to detach was missing
 0.17 2012/06/11
 - basic support for gaps in the data stream in L7::HTTP and above.
 0.16 2012/06/06

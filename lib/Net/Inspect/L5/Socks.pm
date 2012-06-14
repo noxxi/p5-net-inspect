@@ -47,7 +47,7 @@ sub guess_protocol {
 	    return ($obj,length($data));
 
 	    not_me:
-	    $guess->detach;
+	    $guess->detach($self);
 	    return;
 	}
     }
