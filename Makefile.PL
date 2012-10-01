@@ -9,4 +9,5 @@ WriteMakefile(
 	'HTTP::Request' => 0,
 	'HTTP::Response' => 0,
     },
+    LICENSE => 'perl',
 );

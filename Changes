@@ -1,3 +1,5 @@
+0.19 2012/10/1
+- put license into Makefile.PL
 0.18 2012/06/14
 - fixed detach inside Socks::guess_protocol, flow to detach was missing
 0.17 2012/06/11

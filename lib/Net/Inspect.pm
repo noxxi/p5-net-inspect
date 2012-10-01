@@ -2,13 +2,13 @@ use strict;
 use warnings;
 package Net::Inspect;
 
-our $VERSION = "0.18";
+our $VERSION = "0.19";
 1;
 
 
 =head1 NAME
 
-Net::Inspect - libary for inspection of data on various network layers
+Net::Inspect - library for inspection of data on various network layers
 
 =head1 SYNOPSIS
 
