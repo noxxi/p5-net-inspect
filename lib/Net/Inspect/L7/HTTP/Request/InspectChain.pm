@@ -86,6 +86,12 @@ sub xtrace {
     goto &trace;
 }
 
+# for logging
+sub id {
+    my $self = shift;
+    return "$$.$self->{conn}{connid}.$self->{meta}{reqid}";
+}
+
 # add inspection hook
 my %predefined_hooks = (
     'uncompress_ce' => {

@@ -527,8 +527,8 @@ sub _in1 {
 	    $self->xdebug("read until eof");
 	    $self->{offset}[1] += length($data);
 	    $bytes += length($data);
-	    $data = '';
 	    $obj->in_response_body($data,$eof,$time) if $obj;
+	    $data = '';
 	    pop(@$rqs) if $eof; # request done
 	    return $bytes;
 
@@ -635,6 +635,12 @@ sub _parse_hdrfields {
 sub new_request {
     my $self = shift;
     return $self->{upper_flow}->new_request(@_,$self)
+}
+
+# return number of open requests
+sub open_requests {
+    my $self = shift;
+    return 0 + @{$self->{requests}};
 }
 
 sub fatal {
@@ -814,6 +820,10 @@ dumps the state of the open connections via xdebug
 
 returns the current offset in the data stream, that is the position
 behind the within the in_* methods forwarded data.
+
+=item $connection->open_requests
+
+returns the number of open requests, if any.
 
 =back
 

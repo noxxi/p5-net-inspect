@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 package Net::Inspect::Debug;
+use Time::HiRes 'gettimeofday';
 
 use base 'Exporter';
 our @EXPORT = qw(debug trace );
@@ -20,6 +21,8 @@ sub debug {
     }
 
     $msg =~s{^}{DEBUG: }mg;
+    my $ts = sprintf("%.3f",gettimeofday()+0);
+    $msg =~s{^}{$ts }mg;
     print STDERR $msg,"\n";
 }
 
