@@ -33,7 +33,12 @@ sub new {
     return $self;
 }
 
-sub DESTROY { (shift||return)->xdebug("connection done"); }
+sub DESTROY { 
+    my $self = shift or return;
+    $self->xdebug("connection done"); 
+    $self->SUPER::DESTROY();
+}
+
 sub new_connection {
     my ($self,$meta,$relay) = @_;
     my $obj = $self->SUPER::new_connection($meta);

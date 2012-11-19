@@ -5,7 +5,6 @@
 TODO:
 - work transparently, e.g. with iptables REDIRECT rules, instead of
   parsing Host header
-- accounting does not seem to work if fatal gets called
 - let IMP change request header and thus change target etc
 - decide after IMP processsing header, if detailed analysis with
   unchunking and umcompressing etc is really necessary

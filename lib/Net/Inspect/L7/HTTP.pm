@@ -113,6 +113,13 @@ sub offset {
     return $self->{offset}[$dir];
 }
 
+# give requests a chance to cleanup before destroying connection
+sub DESTROY {
+    my $self = shift;
+    @{$self->{requests}} = ();
+}
+
+
 # process request data
 sub _in0 {
     my ($self,$data,$eof,$time) = @_;

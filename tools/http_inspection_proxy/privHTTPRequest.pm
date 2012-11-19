@@ -126,8 +126,8 @@ sub in_data {
 sub fatal {
     my ($self,$reason) = @_;
     my $conn = $self->{conn};
-    warn "[fatal] ".$self->reqid." $reason\n";
-    $self->{conn}->close if $self->{conn};
+    warn "[fatal] ".$self->id." $reason\n";
+    $self->{conn}{relay}->close if $self->{conn};
 }
 
 sub in_response_body {
