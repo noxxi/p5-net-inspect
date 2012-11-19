@@ -1,3 +1,7 @@
+0.20 2012/11/19
+- major change on tools/http_inspection_proxy. complete rewrite and support
+  Net::IMP content filters added
+- small bugfixes and enhancements
 0.19 2012/10/1
 - put license into Makefile.PL
 0.18 2012/06/14
