@@ -176,8 +176,10 @@ sub update_hook {
 ############################################################################
 
 # returns request header as HTTP::Request
+# can also be used to set header
 sub request_header {
     my $self = shift;
+    $self->{rqhdr} = shift if @_;
     my $hdr = $self->{rqhdr} or croak("no request header known");
     if ( ! ref($hdr)) {
 	$hdr = eval { HTTP::Request->parse($hdr) }
@@ -188,8 +190,10 @@ sub request_header {
 }
 
 # returns response header as HTTP::Response
+# can also be used to set header
 sub response_header {
     my $self = shift;
+    $self->{rphdr} = shift if @_;
     my $hdr = $self->{rphdr} or croak("no response header known");
     if ( ! ref($hdr)) {
 	$hdr = eval { HTTP::Response->parse($hdr) }
@@ -725,13 +729,16 @@ same as uncompress_ce, but for C<Transfer-Encoding>.
 will update the hook with with name C<$name> with the given definition.
 Hookable places not given in C<%hook> will be kept.
 
-=item request_header
+=item request_header([$hdr_string])
 
-helper function which will return HTTP::Request object for the request header
+helper function which will return HTTP::Request object for the request header.
+Can also be used to set new header.
 
-=item response_header
+
+=item response_header([$hdr_string])
 
 helper function which will return HTTP::Response object for the response header
+Can also be used to set new header.
 
 =back
 

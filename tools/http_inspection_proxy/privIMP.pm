@@ -10,6 +10,12 @@ use fields (
     'factory',   # factory from new_factory
     'analyzer',  # analyzer from new_analyzer
     'request',   # privHTTPrequest object (weak ref)
+    # original length of request header
+    # plugin should keep this boundary, e.g. either replace or (pre)pass header
+    # but not replace header with header+body or only part of header
+    'rqhdr_len',
+    'rqhdr_buf', # needed to buffer request header if handled in chunks
+    'rqhdr_chg', # set if the header got changed
     # per dir data, e.g. buf[0],pos[1]...
     'buf',       # buffered data per dir
     'pos',       # base position of buf relative to input stream
@@ -73,13 +79,16 @@ sub new_analyzer {
 
     my $self = fields::new(ref($factory));
     %$self = (
-	request  => $request,
-	analyzer => $anl,
-	buf      => ['',''],
-	pos      => [0,0],
-	canpass  => [0,0],
-	prepass  => [0,0],
-	passed   => [undef,undef],
+	request   => $request,
+	analyzer  => $anl,
+	buf       => ['',''],
+	pos       => [0,0],
+	canpass   => [0,0],
+	prepass   => [0,0],
+	passed    => [undef,undef],
+	rqhdr_len => 0,
+	rqhdr_buf => '',
+	rqhdr_chg => '',
     );
     weaken($self->{request});
     weaken( my $wself = $self );
@@ -95,6 +104,10 @@ sub data {
     my ($self,$dir,$data) = @_;
     my $anl = $self->{analyzer} or die;
     return $anl->data($dir,undef) if ! defined $data; # eof
+
+    # first call on dir == 0 will be complete request header, e.g.
+    # called from in_request_header
+    $self->{rqhdr_len} ||= length($data) if $dir == 0;
 
     my $canpass = $self->{canpass}[$dir];
     my ($fwd,$inspect);
@@ -126,8 +139,16 @@ sub data {
     }
 
     if ( defined $fwd ) {
-	$self->{request}->forward($dir,$fwd);
 	$self->{pos}[$dir] += length($fwd); # update pos
+
+	if ($dir == 0 and $self->{rqhdr_len}>0 ) {
+	    _handle_rqhdr($self,\$fwd,$self->{pos}[$dir],0);
+	    die "should replace only request " if defined $fwd
+	} 
+    }
+
+    if ( defined $fwd ) {
+	$self->{request}->imp_forward($dir,$dir?0:1,$fwd);
 	if ( $self->{prepass}[$dir] ) {
 	    $inspect = defined($inspect) ? "$fwd$inspect":$fwd;
 	} else {
@@ -149,9 +170,10 @@ sub _imp_callback {
 
     for my $rv (@rv) {
 	my $typ = shift(@$rv);
+	my ($fwd,$changed);
 	if ( $typ == IMP_ACCTFIELD ) {
 	    my ($k,$v) = @$rv;
-	    $req->acct($k,$v);
+	    $req->imp_acct($k,$v);
 	    $req->xdebug("acct $k=$v");
 	} elsif ( $typ == IMP_DENY ) {
 	    my ($dir,$msg) = @$rv;
@@ -182,7 +204,8 @@ sub _imp_callback {
 		$self->{canpass}[$dir] = $offset;
 		$self->{prepass}[$dir] = ($typ == IMP_PREPASS);
 		if ( $self->{buf}[$dir] ne '' ) {
-		    $req->forward($dir,$self->{buf}[$dir]);
+		    $self->{pos}[$dir] += length($self->{buf}[$dir]);
+		    $fwd = [$dir,$self->{buf}[$dir],$self->{pos}[$dir]];
 		    $self->{buf}[$dir] = '';
 		}
 	    } elsif ( $offset <= $self->{pos}[$dir] ) {
@@ -194,13 +217,12 @@ sub _imp_callback {
 		my $len = $offset - $self->{pos}[$dir];
 		$req->xdebug("$typ($dir,Inbuf($offset)): fwd=$len");
 		$self->{canpass}[$dir] = 0;
-		my $fwd = substr($self->{buf}[$dir],0,$len,'');
 		$self->{pos}[$dir] += $len;
-		$req->forward($dir,$fwd);
+		$fwd = [$dir,substr($self->{buf}[$dir],0,$len,''),$self->{pos}[$dir]];
 	    }
 
 	} elsif ( $typ == IMP_REPLACE ) {
-	    my ($dir,$offset,$newdata) = @rv;
+	    my ($dir,$offset,$newdata) = @$rv;
 
 	    # remove the data from buf which should be replaced
 	    # replacing future data is not supported, replacing already handled
@@ -213,19 +235,49 @@ sub _imp_callback {
 		if $keep < 0;
 
 	    # remove data from buf
-	    $self->xdebug("$typ($dir,Inbuf($offset)) keep=$keep replace=".length($newdata));
+	    $req->xdebug("$typ($dir,Inbuf($offset)) keep=$keep replace=".length($newdata));
 	    $self->{buf}[$dir] = $keep ? substr($self->{buf}[$dir],-$keep,$keep) : '';
 	    $self->{pos}[$dir] = $offset;
 
 	    # and forward new data instead
-	    $req->forward($dir,$newdata) if $newdata ne '';
+	    $changed = 1;
+	    $fwd = [$dir,$newdata,$offset] if $newdata ne '';
 
 	} elsif ( $typ == IMP_TOSENDER ) {
 	    my ($dir,$data) = @$rv;
-	    $self->xdebug("$typ($dir) data=".length($data));
-	    $req->forward($dir,$data);
+	    $req->xdebug("$typ($dir) data=".length($data));
+	    $req->imp_forward($dir,$dir,$data); # from == to
+	}
+
+	if ($fwd) {
+	    my ($dir,$buf,$offset) = @$fwd;
+	    warn "XXXXXXXXXXXXX $dir,$changed $self->{rqhdr_len} - $buf\n";
+	    if ($dir == 0 and $self->{rqhdr_len}>0 ) {
+		_handle_rqhdr($self,\$buf,$offset,$changed);
+		die "should replace only request " if defined $buf
+	    } 
+	    $req->imp_forward($dir,$dir?0:1,$buf) if defined $buf;
 	}
     }
+}
+
+sub _handle_rqhdr {
+    my ($self,$rfwd,$offset,$changed) = @_;
+    $self->{rqhdr_buf} .= $$rfwd;
+    $self->{rqhdr_chg} ||= $changed;
+    my $fwd_over = $offset - $self->{rqhdr_len};
+
+    if ( $fwd_over < 0 ) {
+	# still header data missing
+	$$rfwd = undef; # nothing to forward
+	return;
+    }
+    $self->{rqhdr_len} = -1; # got at least header
+    $$rfwd = $fwd_over>0 
+	? substr($self->{rqhdr_buf},-$fwd_over,$fwd_over,'')  # got header and more
+	: undef;                                              # got header only
+
+    $self->{request}->imp_rqhdr($self->{rqhdr_buf},$self->{rqhdr_chg});
 }
 
 1;

@@ -55,7 +55,14 @@ sub in_request_header {
 
     $self->add_hooks({
 	name => 'fwd-data',
-	request_header => \&_inrqhdr_connect_upstream,
+	request_header => sub {
+	    my ($self,$data,$time) = @_;
+	    if ( my $filter = $self->{imp_filter} ) {
+		$filter->data(0,$$data);
+	    } else {
+		goto &_inrqhdr_connect_upstream,
+	    }
+	},
 	request_body => sub {
 	    my ($self,$data,$eof,$time) = @_;
 	    _send_and_remove($self,1,$data,$time) if $$data ne '';
@@ -186,11 +193,12 @@ sub _inrqhdr_connect_upstream {
     }
 
     $self->xdebug("new request $method $proto://$host:$port$page");
+    $time ||= AnyEvent->now;
     my $connect_cb = sub {
 	$self->{connected} = 1;
 	$self->{acct}{ctime} = AnyEvent->now - $time;
 	if ($$hdr ne '') {
-	    _send($self,1,$$hdr);
+	    _forward($self,0,1,$$hdr);
 	} else {
 	    # successful Upgrade, CONNECT.. - send OK to client
 	    # fake that it came from server so that the state gets
@@ -234,7 +242,7 @@ sub _send {
     if ( my $filter = $self->{imp_filter} ) {
 	$filter->data($from,$data);
     } else {
-	forward($self,$from,$data,$to);
+	_forward($self,$from,$to,$data);
     }
 }
 
@@ -244,14 +252,26 @@ sub _send_and_remove {
     $$dataref = '';
 }
 
-sub forward {
-    my ($self,$from,$data,$to) = @_;
-    $to //= $from ? 0:1;
+sub _forward {
+    my ($self,$from,$to,$data) = @_;
     $self->{acct}{"out$to"} += length($data);
     $self->{conn}{relay}->forward($from,$to,$data);
 }
 
-sub acct {
+
+# callbacks from privIMP --------------------------
+# called on data to forward: (from,to,data)
+*imp_forward = \&_forward;
+
+# called when processing request header is done
+sub imp_rqhdr {
+    my ($self,$hdr,$changed) = @_;
+    $self->request_header($hdr) if $changed;
+    $self->_inrqhdr_connect_upstream(\$hdr);
+}
+
+# called on accounting
+sub imp_acct {
     my ($self,$k,$v) = @_;
     $self->{acct}{$k} = $v
 }

@@ -3,11 +3,11 @@
 =pod
 
 TODO:
-- work transparently, e.g. with iptables REDIRECT rules, instead of
-  parsing Host header
-- let IMP change request header and thus change target etc
 - decide after IMP processsing header, if detailed analysis with
   unchunking and umcompressing etc is really necessary
+- work transparently, e.g. with iptables REDIRECT rules, instead of
+  parsing Host header
+- work as socks4 proxy, maybe as socks5 proxy too
 =cut
 
 # use private include path based on script path and name
