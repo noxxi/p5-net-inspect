@@ -26,6 +26,7 @@ extracts RTP streams from SIP calls
 
 simple web proxy using the Netflow library to inspect and modify requests and
 responses. Can unchunk, uncompress data before inspecting/modifying them.
+Can modify requests using Net::IMP filters.
 
 ==== live-http-headers.pl
 

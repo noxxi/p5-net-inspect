@@ -1,3 +1,5 @@
+0.21 2012/11/20
+- update to 0.20 - forgot to include files into MANIFEST
 0.20 2012/11/19
 - major change on tools/http_inspection_proxy. complete rewrite and support
   Net::IMP content filters added
