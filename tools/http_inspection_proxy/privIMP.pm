@@ -251,7 +251,6 @@ sub _imp_callback {
 
 	if ($fwd) {
 	    my ($dir,$buf,$offset) = @$fwd;
-	    warn "XXXXXXXXXXXXX $dir,$changed $self->{rqhdr_len} - $buf\n";
 	    if ($dir == 0 and $self->{rqhdr_len}>0 ) {
 		_handle_rqhdr($self,\$buf,$offset,$changed);
 		die "should replace only request " if defined $buf
