@@ -18,14 +18,6 @@ lib/Net/Inspect/L7/HTTP/Request/Simple.pm
 Makefile.PL
 README
 t/01_load.t
-tools/http_inspection_proxy.pl
-tools/http_inspection_proxy/IMP_changeTarget.pm
-tools/http_inspection_proxy/IMP_LogFormData.pm
-tools/http_inspection_proxy/privDNS.pm
-tools/http_inspection_proxy/privHTTPConn.pm
-tools/http_inspection_proxy/privHTTPRequest.pm
-tools/http_inspection_proxy/privIMP.pm
-tools/http_inspection_proxy/privRelay.pm
 tools/httpflow.pl
 tools/httpflow/privFileCache.pm
 tools/httpflow/privHTTPConn.pm
