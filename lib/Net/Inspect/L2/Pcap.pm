@@ -2,7 +2,7 @@ use strict;
 use warnings;
 
 package Net::Inspect::L2::Pcap;
-use Net::Pcap qw(:functions :datalink);
+use Net::Pcap qw(pcap_datalink :datalink);
 use base 'Net::Inspect::Flow';
 use fields qw(offset);
 

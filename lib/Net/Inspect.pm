@@ -2,7 +2,7 @@ use strict;
 use warnings;
 package Net::Inspect;
 
-our $VERSION = "0.23";
+our $VERSION = "0.24";
 1;
 
 
@@ -12,7 +12,7 @@ Net::Inspect - library for inspection of data on various network layers
 
 =head1 SYNOPSIS
 
-    use Net::Pcap;
+    use Net::Pcap 'pcap_loop';
     use Net::Inspect::L2::Pcap;
     use Net::Inspect::L3::IP;
     use Net::Inspect::L4::TCP;

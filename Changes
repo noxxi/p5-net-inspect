@@ -1,3 +1,6 @@
+0.24 2012/12/03
+- since 0.17 Net::Pcap no longer exports pcap_* functions when importing
+  ':functions'. Work around by explicitly importing the needed functions.
 0.23 2012/11/22
 - removed tools/http_inspection_proxy from distribution.
   It is now available as a seperate distribution App::HTTP_Proxy_IMP
