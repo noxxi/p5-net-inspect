@@ -225,6 +225,12 @@ sub _in0 {
     # read request header if not done
     if ( not $rq->{state} & RQHDR_DONE ) {
 	# no request header yet, check if data contains it
+
+	# leading newlines at beginning of request are legally ignored junk
+	if ( $data =~s{\A([\r\n]+)}{} ) {
+	    ($obj|$self)->in_junk(0,$1,0,$time);
+	}
+
 	$self->xdebug("need to read request header");
 	if ( $data =~m{ \A
 	    (([A-Z]{2,20})\040{1,3}(\S+)\040{1,3}HTTP/(1\.[01])\r?\n) # request
@@ -410,6 +416,12 @@ sub _in1 {
     # read response header if not done
     if ( not $rq->{state} & RPHDR_DONE ) {
 	$self->xdebug("response header not read yet");
+
+	# leading newlines at beginning of response are legally ignored junk
+	if ( $data =~s{\A([\r\n]+)}{} ) {
+	    ($obj|$self)->in_junk(1,$1,0,$time);
+	}
+
 	# no response header yet, check if data contains it
 	if ( $data =~m{ \A[\r\n]*
 	    (HTTP/1\.[01]\040{1,3}(\d\d\d).*\n)             # HTTP/1.0 200 ..
@@ -723,7 +735,7 @@ Hooks provided:
 
 $data are the data as string.
 
-In some cases $data can be C<<[ 'gap' => $len ]>>, e.g. only the information,
+In some cases $data can be C<< [ 'gap' => $len ] >>, e.g. only the information,
 that there would be C<$len> bytes of data w/o submitting the data. These
 should only be submitted in request and response bodies and only if the 
 attached layer can handle these gaps in the C<in_request_body> and 
@@ -766,7 +778,7 @@ $eof is true if this is the last chunk.
 If no request body is given it will be once called with '' as data,
 except for CONNECT, Upgrade etc where there cannot be a body.
 
-$data can be C<<[ 'gap' => $len ]>> if the input to this
+$data can be C<< [ 'gap' => $len ] >> if the input to this
 layer were gaps.
 
 =item $request->in_response_body($data,$eof,$time)
@@ -777,7 +789,7 @@ It will be called with data '' and eof true if no body is given or if the last
 chunk of chunked encoding was found, except for CONNECT, Upgrade etc where there
 cannot be a body.
 
-$data can be C<<[ 'gap' => $len ]>> if the input to this
+$data can be C<< [ 'gap' => $len ] >> if the input to this
 layer were gaps.
 
 =item $request->in_chunk_header($header,$time)
@@ -798,6 +810,11 @@ Will be called after in_response_body got called with eof true.
 
 Will be called for any data after successful CONNECT or Upgrade, Websockets...
 C<$dir> is 0 for data from client, 1 for data from server.
+
+=item $request->in_junk($dir,$data,$eof,$time)
+
+Will be called for legally ignored junk (empty lines) in front of request or 
+response body.  C<$dir> is 0 for data from client, 1 for data from server.
 
 =item $request->fatal($reason,$dir,$time)
 
