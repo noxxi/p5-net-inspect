@@ -733,8 +733,9 @@ Hooks provided:
 
 =item $connection->in($dir,$data,$eof,$time)
 
-$data are the data as string.
+Processes new data and returns number of bytes processed.
 
+C<$data> are the data as string.
 In some cases $data can be C<< [ 'gap' => $len ] >>, e.g. only the information,
 that there would be C<$len> bytes of data w/o submitting the data. These
 should only be submitted in request and response bodies and only if the 
