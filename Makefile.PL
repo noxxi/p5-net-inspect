@@ -10,4 +10,9 @@ WriteMakefile(
 	'HTTP::Response' => 0,
     },
     LICENSE => 'perl',
+    META_MERGE => {
+        resources => {
+            repository => 'https://github.com/noxxi/p5-net-inspect',
+        },
+    },
 );
