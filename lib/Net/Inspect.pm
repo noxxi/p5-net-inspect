@@ -126,7 +126,7 @@ Steffen Ullrich, <sullr@cpan.org>
 
 =head1 COPYRIGHT
 
-  Copyright 2011 Steffen Ullrich
+  Copyright 2011-2013 Steffen Ullrich
 
 This library is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
