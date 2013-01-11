@@ -1,3 +1,7 @@
+0.25 2013/01/11
+- L7::HTTP - in_(request|response)_header gets additional argument for
+  information extracted from the header, especially the calculated
+  content-length
 0.24 2012/12/03
 - since 0.17 Net::Pcap no longer exports pcap_* functions when importing
   ':functions'. Work around by explicitly importing the needed functions.

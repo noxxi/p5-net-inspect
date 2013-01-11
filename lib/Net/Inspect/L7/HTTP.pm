@@ -277,7 +277,8 @@ sub _in0 {
 		$rq->{rqclen} ||= 0;
 	    }
 
-	    $obj->in_request_header($hdr,$time) if $obj;
+	    $obj->in_request_header($hdr,$time,
+		{ content_length => $rq->{rqclen}}) if $obj;
 
 	    if ( defined $rq->{rqclen} and $rq->{rqclen} == 0 ) {
 		$self->xdebug("no content-length - request body done");
@@ -471,7 +472,10 @@ sub _in1 {
 	    }
 
 	    $self->xdebug("got response header");
-	    $obj->in_response_header($hdr,$time) if $obj;
+	    $obj->in_response_header($hdr,$time,{
+		content_length => $rq->{rpclen},
+		$rq->{rpchunked} ? ( chunked => 1 ):(),
+	    }) if $obj;
 
 	    # if no body invoke hook with empty body and eof
 	    if ( defined $rq->{rpclen} and $rq->{rpclen} == 0 ) {
@@ -762,15 +766,26 @@ given in case the request object likes to call C<fatal> to end the connection.
 The function should not get hold of $conn, e.g. only store a weak reference,
 otherwise memory might leak.
 
-=item $request->in_request_header($header,$time)
+=item $request->in_request_header($header,$time,%hdr_meta)
 
 Called when the full request header is read.
 $header is the string of the header.
 
-=item $request->in_response_header($header,$time)
+%hdr_meta contains information extracted from the header, notably the
+%content-length (key C<content_length>), which is determined based on request
+type and content-length header.
+
+=item $request->in_response_header($header,$time,%hdr_meta)
 
 Called when the full response header is read.
 $header is the string of the header.
+
+%hdr_meta contains information extracted from the header, notably the
+%content-length (key C<content_length>), which is determined based on
+and content-length and transfer-encoding headers.
+If not known (e.g. chunked response or content ends with eof) it will be given
+as C<undef>.
+For chunked content %hdr_data contains the key C<chunked> with a true value.
 
 =item $request->in_request_body($data,$eof,$time)
 
