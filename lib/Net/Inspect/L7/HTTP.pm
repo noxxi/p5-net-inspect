@@ -50,11 +50,14 @@ sub guess_protocol {
 	push @$rp,[$data,$eof,$time];
 	my $buf = join('',map { $_->[0] } @$rp);
 	if ( $buf =~m{
-	    \A[\r\n]*
-	    [A-Z]{2,20}\040{1,3}\S+\040{1,3}HTTP/1\.[01]\r?\n # request
-	    (?:$xtoken:.*\r?\n(?:[\t\040].*\r?\n)* )*       # field:..+cont
-	    \r?\n                                             # empty line
-	}x) {
+	    \A[\r\n]*                                   # initial junk
+	    [A-Z]{2,20}[\040\t]{1,3}                    # method
+	    \S+[\040\t]{1,3}                            # path/URI
+	    HTTP/1\.[01][\040\t]{0,3}                   # version
+	    \r?\n                                       # (CR)LF
+	    (?:$xtoken:.*\r?\n(?:[\t\040].*\r?\n)* )*   # field:..+cont
+	    \r?\n                                       # empty line
+	}xi) {
 	    # looks like HTTP request
 	    my $obj =  $self->new_connection($meta);
 	    # replay as one piece
@@ -100,7 +103,7 @@ sub guess_protocol {
 
 sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
-    $self->xdebug("got %d bytes from %d, eof=%d",length($data),$dir,$eof);
+    $self->xdebug("got %d bytes from %d, eof=%d",length($data),$dir,$eof//0);
     my $bytes = $dir == 0
 	? _in0($self,$data,$eof,$time)
 	: _in1($self,$data,$eof,$time);
@@ -233,13 +236,18 @@ sub _in0 {
 
 	$self->xdebug("need to read request header");
 	if ( $data =~m{ \A
-	    (([A-Z]{2,20})\040{1,3}(\S+)\040{1,3}HTTP/(1\.[01])\r?\n) # request
-	    ((?:$xtoken:.*\r?\n(?:[\t\040].*\r?\n)* )*)               # field:..+cont
-	    (\r?\n)                                                   # empty line
-	}xg) {
+	    (
+		([A-Z]{2,20})[\040\t]+              # method
+		(\S+)[\040\t]+                      # path/URI
+		HTTP/(1\.[01])[\40\t]*              # version
+		\r?\n                               # (CR)LF
+	    ) 
+	    ((?:[^\r\n:]+:.*\n(?:[\t\040].*\n)* )*) # field:..+cont
+	    (\r?\n)                                 # final (CR)LF
+	}xig) {
 	    my ($first,$kv,$empty) = ($1,$5,$6);
-	    $rq->{method} = $2;
-	    $rq->{info} = "$2 $3 HTTP/$4";
+	    $rq->{method} = uc($2);
+	    $rq->{info} = "\U$2\E $3 HTTP/$4";
 	    $self->xdebug("got request header $rq->{info}");
 	    my $n = pos($data);
 	    $self->{offset}[0] += $n;
@@ -424,10 +432,10 @@ sub _in1 {
 	}
 
 	# no response header yet, check if data contains it
-	if ( $data =~m{ \A[\r\n]*
-	    (HTTP/1\.[01]\040{1,3}(\d\d\d).*\n)             # HTTP/1.0 200 ..
-	    ((?:$xtoken:.*\r?\n(?:[\t\040].*\r?\n)* )*)     # field:..+cont
-	    (\r?\n)                                         # empty line
+	if ( $data =~m{ \A
+	    (HTTP/1\.[01][\040\t]+(\d\d\d).*\n)          # HTTP/1.0 200 ..
+	    ((?:$xtoken:.*\r?\n(?:[\t\040].*\n)* )*)     # field:..+cont
+	    (\r?\n)                                      # empty line
 	}xg) {
 	    my ($first,$code,$kv,$empty) = ($1,$2,$3,$4);
 	    my $n = pos($data);
