@@ -6,7 +6,7 @@ use strict;
 use warnings;
 package Net::Inspect::L7::HTTP;
 use base 'Net::Inspect::Flow';
-use Net::Inspect::Debug qw(:DEFAULT $DEBUG);
+use Net::Inspect::Debug qw(:DEFAULT $DEBUG %TRACE);
 use Hash::Util 'lock_keys';
 use Carp 'croak';
 use fields (
@@ -37,10 +37,21 @@ use constant {
 #                 | "{" | "}" | SP | HT
 
 my $token = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f-\xff]+};
+my $token_value_cont = qr{
+    ($token):                      # key:
+    [\040\t]*([^\r\n]*?)[\040\t]*  # <space>value<space>
+    ((?:\r?\n[\040\t][^\r\n]*)*)   # continuation lines
+    \r?\n                          # (CR)LF
+}x;
 
 # common error: "Last Modified" instead of "Last-Modified"
 # squid seems to just strip invalid headers, try the same
 my $xtoken = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f-\xff][^:[:^print:]]*};
+
+my %METHODS_WITHOUT_RQBODY = map { ($_,1) } qw( GET HEAD DELETE CONNECT );
+my %METHODS_WITH_RQBODY = map { ($_,1) } qw( POST PUT );
+my %CODE_WITHOUT_RPBODY = map { ($_,1) } qw(204 205 304);
+my %METHODS_WITHOUT_RPBODY = map { ($_,1) } qw(HEAD);
 
 sub guess_protocol {
     my ($self,$guess,$dir,$data,$eof,$time,$meta) = @_;
@@ -103,7 +114,7 @@ sub guess_protocol {
 
 sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
-    $self->xdebug("got %d bytes from %d, eof=%d",length($data),$dir,$eof//0);
+    $DEBUG && $self->xdebug("got %d bytes from %d, eof=%d",length($data),$dir,$eof//0);
     my $bytes = $dir == 0
 	? _in0($self,$data,$eof,$time)
 	: _in1($self,$data,$eof,$time);
@@ -152,7 +163,7 @@ sub _in0 {
     READ_DATA:
 
     if ($self->{error}) {
-	$self->xdebug("no more data because of server side error");
+	$DEBUG && $self->xdebug("no more data because of server side error");
 	return $bytes;
     }
 
@@ -166,7 +177,7 @@ sub _in0 {
 
     if (@$rqs and $rqs->[0]{state} & RQ_ERROR ) {
 	# error reading request
-	$self->xdebug("no more data because of client side error");
+	$DEBUG && $self->xdebug("no more data because of client side error");
 	return $bytes;
     }
 
@@ -179,18 +190,18 @@ sub _in0 {
 	$bytes += $n;
 	$self->{offset}[0] += $n;
 	substr($data,0,$n,'');
-	$self->xtrace("eat empty lines before request header");
+	%TRACE && $self->xtrace("eat empty lines before request header");
     }
 
     if ( $data eq '' ) {
-	$self->xdebug("no data, eof=$eof, bytes=$bytes");
+	$DEBUG && $self->xdebug("no data, eof=$eof, bytes=$bytes");
 	return $bytes if ! $eof; # need more data
 
 	# handle EOF
 	# check if we got request body for last request
 	if ( @$rqs and not $rqs->[0]{state} & RQBDY_DONE ) {
 	    # request body not done yet
-	    ($rqs->[0]{obj}||$self)->xtrace("request body not done but eof");
+	    %TRACE && ($rqs->[0]{obj}||$self)->xtrace("request body not done but eof");
 	    ($rqs->[0]{obj}||$self)->fatal('eof but request body not done',0,$time);
 	    $rqs->[0]{state} |= RQ_ERROR;
 	    return $bytes;
@@ -202,7 +213,7 @@ sub _in0 {
     # create new request if no open request or last open request has the
     # request body already done (pipelining)
     if ( ! @$rqs or $rqs->[0]{state} & RQBDY_DONE ) {
-	$self->xdebug("create new request");
+	$DEBUG && $self->xdebug("create new request");
 	my $obj = $self->new_request({
 	    %{$self->{meta}},
 	    time => $time,
@@ -234,29 +245,31 @@ sub _in0 {
 	    ($obj|$self)->in_junk(0,$1,0,$time);
 	}
 
-	$self->xdebug("need to read request header");
-	if ( $data =~m{ \A
-	    (
-		([A-Z]{2,20})[\040\t]+              # method
-		(\S+)[\040\t]+                      # path/URI
-		HTTP/(1\.[01])[\40\t]*              # version
-		\r?\n                               # (CR)LF
-	    ) 
-	    ((?:[^\r\n:]+:.*\n(?:[\t\040].*\n)* )*) # field:..+cont
-	    (\r?\n)                                 # final (CR)LF
-	}xig) {
-	    my ($first,$kv,$empty) = ($1,$5,$6);
+	$DEBUG && $self->xdebug("need to read request header");
+	if ( $data =~s{( \A
+	    ([A-Z]{2,20})[\040\t]+          # method
+	    (\S+)[\040\t]+                  # path/URI
+	    HTTP/(1\.[01])[\40\t]*          # version
+	    \r?\n                           # (CR)LF
+	    ([^\r\n].*?\n)?                 # fields
+	    \r?\n                           # final (CR)LF
+	)}{}sxi ) {
+	    my $hdr = $1;
 	    $rq->{method} = uc($2);
+	    my $url = $3;
+	    my $version = $4;
 	    $rq->{info} = "\U$2\E $3 HTTP/$4";
-	    $self->xdebug("got request header $rq->{info}");
-	    my $n = pos($data);
+	    $DEBUG && $self->xdebug("got request header $rq->{info}");
+
+	    my %kv;
+	    my $bad = _parse_hdrfields($5,\%kv);
+	    %TRACE && ($obj||$self)->xtrace("invalid request header data: $bad") 
+		if $bad ne '';
+
+	    my $n = length($hdr);
 	    $self->{offset}[0] += $n;
 	    $bytes += $n;
-	    substr($data,0,$n,'');
 	    $rq->{state} |= RQHDR_DONE; # rqhdr done
-
-	    my %kv = _parse_hdrfields(\$kv,$obj||$self);
-	    my $hdr = $first.$kv.$empty;
 
 	    if ( my $cl = $kv{'content-length'} ) {
 		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
@@ -267,11 +280,11 @@ sub _in0 {
 		    return $bytes;
 		}
 		$rq->{rqclen} = $cl->[0];
-		$self->xdebug(
+		$DEBUG && $self->xdebug(
 		    "set content-length to $rq->{rqclen} from header");
 	    }
 
-	    if ( $rq->{method} =~m{^(?:HEAD|GET|CONNECT)$} ) {
+	    if ( $METHODS_WITHOUT_RQBODY{ $rq->{method} } ) {
 		if ( $rq->{rqclen} ) {
 		    ($obj||$self)->fatal(
 			"no body allowed with method $rq->{method}",0,$time);
@@ -279,20 +292,34 @@ sub _in0 {
 		    return $bytes;
 		}
 		$rq->{rqclen} = ( $rq->{method} eq 'CONNECT' ) ? undef : 0;
+	    } elsif ( $METHODS_WITH_RQBODY{ $rq->{method} } ) {
+		if ( ! defined $rq->{rqclen} ) {
+		    ($obj||$self)->fatal(
+			"content-length must be given with method $rq->{method}",
+			0,$time);
+		    $rq->{state} |= RQ_ERROR;
+		    return $bytes;
+		}
 	    } else {
 		# if not given content-length is considered 0
 		# TODO support chunked encoding from client to server
 		$rq->{rqclen} ||= 0;
 	    }
 
-	    $obj->in_request_header($hdr,$time,
-		{ content_length => $rq->{rqclen}}) if $obj;
+	    $obj && $obj->in_request_header($hdr,$time, { 
+		content_length => $rq->{rqclen},
+		method => $rq->{method},
+		url => $url,
+		version => $version,
+		fields => \%kv,
+		$bad eq '' ? () : ( junk => $bad ),
+	    });
 
 	    if ( defined $rq->{rqclen} and $rq->{rqclen} == 0 ) {
-		$self->xdebug("no content-length - request body done");
+		$DEBUG && $self->xdebug("no content-length - request body done");
 		# no clen - body done
 		$rq->{state} |= RQBDY_DONE;
-		$obj->in_request_body('',1,$time) if $obj;
+		$obj && $obj->in_request_body('',1,$time);
 	    }
 
 	} elsif ( $data =~m{[^\n]\r?\n\r?\n}g ) {
@@ -309,7 +336,7 @@ sub _in0 {
 	    return $bytes;
 	} else {
 	    # will be called on new data from upper flow
-	    $self->xdebug("need more bytes for request header");
+	    $DEBUG && $self->xdebug("need more bytes for request header");
 	    return $bytes;
 	}
     }
@@ -319,7 +346,7 @@ sub _in0 {
 	# request body
 	my $l = length($data);
 	if ( $l >= $rq->{rqclen} ) {
-	    $self->xdebug(
+	    $DEBUG && $self->xdebug(
 		"got all request body data $l >= $rq->{rqclen} obj=$obj");
 	    # got all request body
 	    my $body = substr($data,0,$rq->{rqclen},'');
@@ -327,15 +354,15 @@ sub _in0 {
 	    $bytes += $rq->{rqclen};
 	    $rq->{rqclen} = 0;
 	    $rq->{state} |= RQBDY_DONE; # req body done
-	    $obj->in_request_body($body,1,$time) if $obj;
+	    $obj && $obj->in_request_body($body,1,$time);
 	} else {
-	    $self->xdebug("got part of request body data $l < $rq->{rqclen}");
+	    $DEBUG && $self->xdebug("got part of request body data $l < $rq->{rqclen}");
 	    # only part
 	    my $body = substr($data,0,$l,'');
 	    $self->{offset}[0] += $l;
 	    $bytes += $l;
 	    $rq->{rqclen} -= $l;
-	    $obj->in_request_body($body,0,$time) if $obj;
+	    $obj && $obj->in_request_body($body,0,$time);
 	}
     }
 
@@ -390,7 +417,7 @@ sub _in1 {
     }
 
     if ( $data eq '' ) {
-	$self->xdebug("no more data, eof=$eof bytes=$bytes");
+	$DEBUG && $self->xdebug("no more data, eof=$eof bytes=$bytes");
 	return $bytes if ! $eof; # need more data
 
 	# handle EOF
@@ -403,7 +430,7 @@ sub _in1 {
 	}
 	if ( @$rqs ) {
 	    # response body not done yet
-	    ($rqs->[-1]{obj}||$self)->xtrace("response body not done but eof");
+	    %TRACE && ($rqs->[-1]{obj}||$self)->xtrace("response body not done but eof");
 	    ($rqs->[-1]{obj}||$self)->fatal('eof but response body not done',
 		1,$time);
 	    pop(@$rqs);
@@ -424,7 +451,7 @@ sub _in1 {
 
     # read response header if not done
     if ( not $rq->{state} & RPHDR_DONE ) {
-	$self->xdebug("response header not read yet");
+	$DEBUG && $self->xdebug("response header not read yet");
 
 	# leading newlines at beginning of response are legally ignored junk
 	if ( $data =~s{\A([\r\n]+)}{} ) {
@@ -432,20 +459,24 @@ sub _in1 {
 	}
 
 	# no response header yet, check if data contains it
-	if ( $data =~m{ \A
-	    (HTTP/1\.[01][\040\t]+(\d\d\d).*\n)          # HTTP/1.0 200 ..
-	    ((?:$xtoken:.*\r?\n(?:[\t\040].*\n)* )*)     # field:..+cont
-	    (\r?\n)                                      # empty line
-	}xg) {
-	    my ($first,$code,$kv,$empty) = ($1,$2,$3,$4);
-	    my $n = pos($data);
+	if ( $data =~s{( \A
+	    HTTP/(1\.[01])[\040\t]+          # version
+	    (\d\d\d)                         # code
+	    (?:[\040\t]+([^\r\n]*))?         # reason
+	    \r?\n
+	    ([^\r\n].*?\n)?                  # fields
+	    \r?\n                            # empty line
+	)}{}sxi) {
+	    my ($hdr,$version,$code,$reason) = ($1,$2,$3,$4);
+	    my %kv;
+	    my $bad = _parse_hdrfields($5,\%kv);
+	    %TRACE && ($obj||$self)->xtrace("invalid response header data: $bad") 
+		if $bad ne '';
+
+	    my $n = length($hdr);
 	    $bytes += $n;
 	    $self->{offset}[1] += $n;
-	    substr($data,0,$n,'');
 	    $rq->{state} |= RPHDR_DONE; # response header done
-
-	    my %kv = _parse_hdrfields(\$kv,$obj||$self);
-	    my $hdr = $first.$kv.$empty;
 
 	    if ( my $cl = $kv{'content-length'} ) {
 		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
@@ -464,36 +495,39 @@ sub _in1 {
 
 	    if ( $rq->{method} eq 'CONNECT' and $code =~m{^2} ) {
 		$self->{upgrade} = 1;
-		undef $rq->{rpchunked};
-		$rq->{rpclen} = undef;
-	    } elsif ( $rq->{method} eq 'HEAD'
-		or $code =~m{^(?:204|205|304)$} ) {
+		$rq->{rpclen} = $rq->{rpchunked} = undef;
+	    } elsif ( $METHODS_WITHOUT_RPBODY{ $rq->{method} }
+		or $CODE_WITHOUT_RPBODY{$code} ) {
 		# no content, even if specified
 		$rq->{rpclen} = 0;
-		undef $rq->{rpchunked};
+		$rq->{rpchunked} = undef;
 	    }
 
 	    if ( $rq->{rpchunked} and defined $rq->{rpclen} ) {
 		# RFC2616 4.4.3: if both given ignore content-length
-		($obj||$self)->xtrace("content-length and chunked given");
+		%TRACE && ($obj||$self)->xtrace("content-length and chunked given");
 		$rq->{rpclen} = undef;
 	    }
 
-	    $self->xdebug("got response header");
-	    $obj->in_response_header($hdr,$time,{
+	    $DEBUG && $self->xdebug("got response header");
+	    $obj && $obj->in_response_header($hdr,$time,{
 		content_length => $rq->{rpclen},
 		$rq->{rpchunked} ? ( chunked => 1 ):(),
-	    }) if $obj;
+		version => $version,
+		code => $code,
+		reason => $reason,
+		fields => \%kv,
+		$bad eq '' ? () : ( junk => $bad ),
+	    });
 
 	    # if no body invoke hook with empty body and eof
 	    if ( defined $rq->{rpclen} and $rq->{rpclen} == 0 ) {
 		# clen == 0 -> body done
-		$self->xdebug("no response body");
-		$obj->in_response_body('',1,$time) if $obj;
+		$DEBUG && $self->xdebug("no response body");
+		$obj && $obj->in_response_body('',1,$time);
 		pop(@$rqs);
 		goto READ_DATA;
 	    }
-
 
 	    if ( ! $rq->{rpchunked} && ! $rq->{rpclen} ) {
 		$rq->{state} |= RPBDY_DONE; # body done when eof
@@ -512,7 +546,7 @@ sub _in1 {
 	    ($obj||$self)->fatal('eof in response header',1,$time);
 	} else {
 	    # will be called on new data from upper flow
-	    $self->xdebug("need more data for response header");
+	    $DEBUG && $self->xdebug("need more data for response header");
 	    return $bytes;
 	}
     }
@@ -520,7 +554,7 @@ sub _in1 {
     # read response body
     if ( $data ne '' ) {
 	# response body
-	$self->xdebug("response body data");
+	$DEBUG && $self->xdebug("response body data");
 
 	# have content-length or within chunk
 	if ( my $want = $rq->{rpclen} ) {
@@ -528,7 +562,7 @@ sub _in1 {
 	    # with known length
 	    my $l = length($data);
 	    if ( $l >= $want ) {
-		$self->xdebug("need $want bytes, got all($l)");
+		$DEBUG && $self->xdebug("need $want bytes, got all($l)");
 		# got all response body
 		my $body = substr($data,0,$want,'');
 		$self->{offset}[1] += $want;
@@ -545,7 +579,7 @@ sub _in1 {
 		}
 	    } else {
 		# only part
-		$self->xdebug("need $want bytes, got only $l");
+		$DEBUG && $self->xdebug("need $want bytes, got only $l");
 		my $body = substr($data,0,$l,'');
 		$self->{offset}[1] += $l;
 		$bytes += $l;
@@ -555,7 +589,7 @@ sub _in1 {
 
 	# no content-length, no chunk: must read until eof
 	} elsif ( ! $rq->{rpchunked} ) {
-	    $self->xdebug("read until eof");
+	    $DEBUG && $self->xdebug("read until eof");
 	    $self->{offset}[1] += length($data);
 	    $bytes += length($data);
 	    $obj->in_response_body($data,$eof,$time) if $obj;
@@ -567,14 +601,14 @@ sub _in1 {
 	} else {
 	    # [2] must get CRLF after chunk
 	    if ( $rq->{rpchunked} == 2 ) {
-		$self->xdebug("want CRLF after chunk");
+		$DEBUG && $self->xdebug("want CRLF after chunk");
 		if ( $data =~m{\A\r?\n}g ) {
 		    my $n = pos($data);
 		    $self->{offset}[1] += $n;
 		    $bytes += $n;
 		    substr($data,0,$n,'');
 		    $rq->{rpchunked} = 1; # get next chunk header
-		    $self->xdebug("got CRLF after chunk");
+		    $DEBUG && $self->xdebug("got CRLF after chunk");
 		} elsif ( length($data)>=2 ) {
 		    ($obj||$self)->fatal("no CRLF after chunk",1,$time);
 		    $self->{error} = 1;
@@ -587,14 +621,14 @@ sub _in1 {
 
 	    # [1] must read chunk header
 	    if ( $rq->{rpchunked} == 1 ) {
-		$self->xdebug("want chunk header");
+		$DEBUG && $self->xdebug("want chunk header");
 		if ( $data =~m{\A([\da-fA-F]+)[ \t]*(?:;.*)?\r?\n}g ) {
 		    $rq->{rpclen} = hex($1);
 		    my $chdr = substr($data,0,pos($data),'');
 		    $self->{offset}[1] += length($chdr);
 		    $bytes += length($chdr);
 		    $obj->in_chunk_header($chdr,$time) if $obj;
-		    $self->xdebug(
+		    $DEBUG && $self->xdebug(
 			"got chunk header - want $rq->{rpclen} bytes");
 		    if ( ! $rq->{rpclen} ) {
 			# last chunk
@@ -613,12 +647,12 @@ sub _in1 {
 
 	    # [3] must read chunk trailer
 	    if ( $rq->{rpchunked} == 3 ) {
-		$self->xdebug("want chunk trailer");
+		$DEBUG && $self->xdebug("want chunk trailer");
 		if ( $data =~m{\A
 		    (?:\w[\w\-]*:.*\r?\n(?:[\t\040].*\r?\n)* )*  # field:..+cont
 		    \r?\n
 		}xg) {
-		    $self->xdebug("got chunk trailer");
+		    $DEBUG && $self->xdebug("got chunk trailer");
 		    my $trailer = substr($data,0,pos($data),'');
 		    $self->{offset}[1] += length($trailer);
 		    $bytes += length($trailer);
@@ -631,7 +665,7 @@ sub _in1 {
 		    return $bytes;
 		} else {
 		    # need more
-		    $self->xdebug("need more bytes for chunk trailer");
+		    $DEBUG && $self->xdebug("need more bytes for chunk trailer");
 		    return $bytes
 		}
 	    }
@@ -643,23 +677,28 @@ sub _in1 {
 
 # parse and normalize header
 sub _parse_hdrfields {
-    my ($rkv,$obj) = @_;
-    my @kv = $$rkv =~m{\G($xtoken)(:)(.*\r?\n(?:[\t\040].*\r?\n)*)}g;
-    my %kv;
-    for(my $i=0;$i<@kv;$i+=3) {
-	if ( $kv[$i] !~ m{^$token$} ) {
-	    $obj->xtrace("invalid header field '$kv[$i]'");
-	    splice(@kv,$i,3);
-	    $$rkv = join('',@kv);
-	    redo;
+    my ($hdr,$fields) = @_;
+    my $bad = '';
+    parse:
+    while ( $hdr =~m{\G$token_value_cont}gc ) {
+	if ($3 eq '') {
+	    # no continuation line
+            push @{$fields->{ lc($1) }},$2;
+	} else {
+	    # with continuation line
+            my ($k,$v) = ($1,$2.$3);
+            # <space>value-part<space> -> ' ' + value-part
+            $v =~s{[\r\n]+[ \t](.*?)[ \t]*}{ $1}g;
+            push @{$fields->{ lc($k) }},$v;
 	}
-	my $v = $kv[$i+2];
-	$v =~s{[\r\n]+}{ };
-	$v =~s{^\s+}{};
-	$v =~s{\s+$}{};
-	push @{ $kv{lc($kv[$i])} }, $v;
     }
-    return %kv;
+    if (pos($hdr)//0 != length($hdr)) {
+        # bad line inside
+        substr($hdr,0,pos($hdr),'');
+        $bad .= $1 if $hdr =~s{\A([^\n]*)\n}{};
+        goto parse;
+    }
+    return $bad;
 }
 
 
@@ -676,7 +715,7 @@ sub open_requests {
 
 sub fatal {
     my ($self,$reason,$dir,$time) = @_;
-    $self->xtrace($reason);
+    %TRACE && $self->xtrace($reason);
 }
 
 sub xtrace {
@@ -774,26 +813,54 @@ given in case the request object likes to call C<fatal> to end the connection.
 The function should not get hold of $conn, e.g. only store a weak reference,
 otherwise memory might leak.
 
-=item $request->in_request_header($header,$time,%hdr_meta)
+=item $request->in_request_header($header,$time,\%hdr_meta)
 
 Called when the full request header is read.
 $header is the string of the header.
 
-%hdr_meta contains information extracted from the header, notably the
-%content-length (key C<content_length>), which is determined based on request
-type and content-length header.
+%hdr_meta contains information extracted from the header:
 
-=item $request->in_response_header($header,$time,%hdr_meta)
+=over 8
+
+=item method - method of request
+
+=item url - url, as given in request
+
+=item version - version of HTTP spoken in request
+
+=item fields - (key => \@values) hash of header fields
+
+=item junk - invalid data found in header fields part
+
+=item content_length - length of request body
+
+=back
+
+
+=item $request->in_response_header($header,$time,\%hdr_meta)
 
 Called when the full response header is read.
 $header is the string of the header.
 
-%hdr_meta contains information extracted from the header, notably the
-%content-length (key C<content_length>), which is determined based on
-and content-length and transfer-encoding headers.
-If not known (e.g. chunked response or content ends with eof) it will be given
-as C<undef>.
-For chunked content %hdr_data contains the key C<chunked> with a true value.
+%hdr_meta contains information extracted from the header:
+
+=over 8
+
+=item version - version of HTTP spoken in response
+
+=item code - status code from response
+
+=item reason - reason given for response code
+
+=item fields - (key => \@values) hash of header fields
+
+=item junk - invalid data found in header fields part
+
+=item content_length - length of request body if known, else undef
+
+=item chunked - true if body uses transfer encoding chunked
+
+=back
 
 =item $request->in_request_body($data,$eof,$time)
 
