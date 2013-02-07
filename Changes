@@ -1,3 +1,5 @@
+0.27 2013/02/01
+- fix deflate decoding in Net::Inspect::L7::HTTP::Request::InspectChain
 0.26 2013/02/01
 - L7::HTTP - more information for in_(request|response)_header, including
   all fields, url, version and possible junk data from header

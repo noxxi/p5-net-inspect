@@ -393,7 +393,7 @@ sub _rphdr_unchunk {
 
 ############################################################################
 # 'uncompress_ce' and 'uncompress_te' hooks
-# Handling of gzip and inflate content
+# Handling of gzip and deflate content
 # the hook _rphdr_uncompress_* is added to respone_header and if it finds
 # a matching content-encoding/transfer_encoding it will remove it and add
 # _rpbody_uncompress as a hook for response_body
@@ -413,7 +413,7 @@ sub _rphdr_uncompress_ce {
     my ($self,$hdr_ref,$time,%opt) = @_;
     my $hdr = $self->response_header;
     my $oce = my $ce = $hdr->header('Content-Encoding') or return 0;
-    $ce =~s{\s*\b(gzip|inflate)\b\s*}{}i or return 0;
+    $ce =~s{\s*\b(?:x-)?(gzip|deflate)\b\s*}{}i or return 0;
     $self->{info}{"ce_$1"}++;
     $self->update_hook('uncompress_ce',{
 	response_body => [\&_rpbody_uncompress,{ typ => lc($1) }]
@@ -452,7 +452,7 @@ sub _rphdr_uncompress_te {
     my ($self,$hdr_ref,$time,%opt) = @_;
     my $hdr = $self->response_header;
     my $te = $hdr->header('Transfer-Encoding') or return 0;
-    my $ote = $te =~s{\s*\b(gzip|inflate)\b\s*}{}i or return 0;
+    my $ote = $te =~s{\s*\b(?:x-)?(gzip|deflate)\b\s*}{}i or return 0;
     $self->{info}{"te_$1"}++;
     $self->update_hook('uncompress_te',{
 	response_body => [\&_rpbody_uncompress,{ typ => lc($1) }]
@@ -577,7 +577,7 @@ sub _rpbody_uncompress {
 	    # TODO - check checksum?
 	    return '' if length($$data_ref)<8;
 	    substr($$data_ref,0,8,'');
-	    $zlib->{gzip_csum} = ''
+	    $zlib->{gzip_csum} = 0;
 	}
     } elsif ( $stat != Z_OK ) {
 	$self->fatal("bad status $stat while inflating stream",1,$time);
@@ -709,11 +709,11 @@ header for alle changed headers with the given prefix.
 =item uncompress_ce
 
 will hook into C<response_header>. If it says, that the response has a
-C<Content-Encoding> of gzip or inflate it will remove the info from the header
+C<Content-Encoding> of gzip or deflate it will remove the info from the header
 and update hook in C<response_body> to uncompress content.
 
 If compression was found and removed it will set C<$self->{info}{ce_gzip}> or
-C<$self->{info}{ce_inflate}>.
+C<$self->{info}{ce_deflate}>.
 
 If option C<-original-header-prefix> is given it will preserver the original
 header for alle changed headers with the given prefix.
@@ -744,4 +744,4 @@ Can also be used to set new header.
 
 =head1 LIMITS
 
-Only gzip and inflate are supported for uncompression, no 'uncompress'
+Only gzip and deflate are supported for uncompression, no 'uncompress'
