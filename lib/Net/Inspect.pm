@@ -2,7 +2,7 @@ use strict;
 use warnings;
 package Net::Inspect;
 
-our $VERSION = "0.27";
+our $VERSION = "0.27_1";
 1;
 
 
@@ -23,7 +23,7 @@ Net::Inspect - library for inspection of data on various network layers
     my $pcap = Net::Pcap->new...
     ...
     my $l7 = Net::Inspect::L7::HTTP->new;
-    my $l4 = Net::Inspect::L4::TCP->new($l5);
+    my $l4 = Net::Inspect::L4::TCP->new($l7);
     my $l3 = Net::Inspect::L3::IP->new($l4);
     my $l2 = Net::Inspect::L2::Pcap->new($pcap,$l3);
 
@@ -85,7 +85,7 @@ processes raw IP packets, does defragmentation.
 handles TCP connections, e.g. connection setup and shutdown and reordering
 of packets.
 
-=item L<Net::Inspect::L5::UDP>
+=item L<Net::Inspect::L4::UDP>
 
 handles UDP packets. Can aggregate udp packets in virtual connections.
 

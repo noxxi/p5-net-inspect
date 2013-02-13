@@ -678,6 +678,7 @@ sub _in1 {
 # parse and normalize header
 sub _parse_hdrfields {
     my ($hdr,$fields) = @_;
+    return '' if ! defined $hdr;
     my $bad = '';
     parse:
     while ( $hdr =~m{\G$token_value_cont}gc ) {

@@ -1,3 +1,6 @@
+0.27_1 2013/02/13
+- fix documentation errors, thanks to perl[AT]theconrys[DOT]com 
+  https://rt.cpan.org/Ticket/Display.html?id=83213
 0.27 2013/02/01
 - fix deflate decoding in Net::Inspect::L7::HTTP::Request::InspectChain
 0.26 2013/02/01
