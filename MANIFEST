@@ -16,6 +16,7 @@ lib/Net/Inspect/L7/HTTP.pm
 lib/Net/Inspect/L7/HTTP/Request/InspectChain.pm
 lib/Net/Inspect/L7/HTTP/Request/Simple.pm
 Makefile.PL
+MANIFEST
 README
 t/01_load.t
 tools/httpflow.pl
