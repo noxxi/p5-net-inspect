@@ -43,7 +43,7 @@ sub import {
 sub debug {
     $DEBUG or return;
     my $msg = shift;
-    $msg = sprintf($msg,@_) if @_;
+    $msg = do { no warnings; sprintf($msg,@_) } if @_;
     if ( $DEBUG_SUB ) {
         @_ = ($msg);
         # goto foreign debug sub
