@@ -319,35 +319,35 @@ sub in_response_body {
 }
 
 sub in_chunk_header {
-    my ($self,$data,$time) = @_;
+    my ($self,$dir,$data,$time) = @_;
     my $bytes = length($data);
     if ( my $hooks = $self->{hooks}{chunk_header} ) {
 	# hooks might be dynamically added inside a previous hook
 	for(my $i=0;$i<@$hooks;$i++) {
 	    my (undef,undef,$sub,@arg) = @{ $hooks->[$i] };
 	    $sub or next;
-	    defined $sub->($self,\$data,$time,@arg) or return;
+	    defined $sub->($self,$dir,\$data,$time,@arg) or return;
 	    $data eq '' and return $bytes;
 	}
     }
-    $self->{upper_flow}->in_chunk_header($self,$data,$time)
+    $self->{upper_flow}->in_chunk_header($self,$dir,$data,$time)
 	if $self->{upper_flow};
     return $bytes;
 }
 
 sub in_chunk_trailer {
-    my ($self,$data,$time) = @_;
+    my ($self,$dir,$data,$time) = @_;
     my $bytes = length($data);
     if ( my $hooks = $self->{hooks}{chunk_trailer} ) {
 	# hooks might be dynamically added inside a previous hook
 	for(my $i=0;$i<@$hooks;$i++) {
 	    my (undef,undef,$sub,@arg) = @{ $hooks->[$i] };
 	    $sub or next;
-	    defined $sub->($self,\$data,$time,@arg) or return;
+	    defined $sub->($self,$dir,\$data,$time,@arg) or return;
 	    $data eq '' and return $bytes;
 	}
     }
-    $self->{upper_flow}->in_chunk_trailer($self,$data,$time)
+    $self->{upper_flow}->in_chunk_trailer($self,$dir,$data,$time)
 	if $self->{upper_flow};
     return $bytes;
 }

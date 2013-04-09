@@ -1,3 +1,15 @@
+0.29 2013/04/09
+- L7::HTTP
+  - support for 1xx responses
+  - support for chunked requests
+    INTERFACE CHANGE!! in_chunk_{header,trailer} now specifify direction
+    before the data
+  - fixes for chunked handling:
+    - Transfer-Encoding is compared case insensitive
+    - chunked is only enabled if Transfer-Encoding is exactly 'chunked' 
+      (ignore case) not 'chunked whatever' etc
+    - chunked is only available with version >= 1.1
+  - added test 02_l7http
 0.28 2013/02/25 
 - same as 0.27_1
 0.27_1 2013/02/13

@@ -43,16 +43,16 @@ sub in_response_body {
 }
 
 sub in_chunk_header {
-    my ($self,$hdr,$time) = @_;
-    if ( $self->{chunked}++ ) {
+    my ($self,$dir,$hdr,$time) = @_;
+    if ( $self->{chunked}[$dir]++ ) {
 	# not first chunk, add chunk end from last one
 	$hdr = "\r\n$hdr";
     }
-    return $self->in(1,$hdr,$time);
+    return $self->in($dir,$hdr,$time);
 }
 sub in_chunk_trailer {
-    my ($self,$trailer,$time) = @_;
-    return $self->in(1,$trailer,$time);
+    my ($self,$dir,$trailer,$time) = @_;
+    return $self->in($dir,$trailer,$time);
 }
 
 sub in_data {

@@ -50,7 +50,7 @@ my $xtoken = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f-\xff][^:[:^print:]]*};
 
 my %METHODS_WITHOUT_RQBODY = map { ($_,1) } qw( GET HEAD DELETE CONNECT );
 my %METHODS_WITH_RQBODY = map { ($_,1) } qw( POST PUT );
-my %CODE_WITHOUT_RPBODY = map { ($_,1) } qw(204 205 304);
+my %CODE_WITHOUT_RPBODY = map { ($_,1) } (100..199, 204, 205, 304);
 my %METHODS_WITHOUT_RPBODY = map { ($_,1) } qw(HEAD);
 
 sub guess_protocol {
@@ -156,7 +156,9 @@ sub _in0 {
 	    $obj->in_request_body([ gap => $len ],$eof,$time);
 	}
 	$rqs->[0]{rqclen} -= $len;
-	$rqs->[0]{state} |= RQBDY_DONE if ! $rqs->[0]{rqclen};
+	if ( ! $rqs->[0]{rqclen} && ! $rqs->[0]{rqchunked} ) {
+	    $rqs->[0]{state} |= RQBDY_DONE;
+	}
 	return $len;
     }
 
@@ -225,7 +227,14 @@ sub _in0 {
 	    state    => 0,
 	    rqclen   => undef,   # open content-length request
 	    rpclen   => undef,   # open content-length respone
-	    rpchunked => undef,  # chunked mode for response: undef|1|2|3
+	    # chunked mode for request|response:
+	    #   false - no chunking
+	    #   1,r[qp]clen == 0 - next will be chunk size
+	    #   1,r[qp]clen > 0  - inside chunk data, need *clen
+	    #   2 - next will be chunk
+	    #   3 - after last chunk, next will be chunk trailer
+	    rqchunked => undef,  # chunked mode for request
+	    rpchunked => undef,  # chunked mode for response
 	    method   => undef,   # request method
 	    info     => '',      # debug info
 	);
@@ -284,6 +293,17 @@ sub _in0 {
 		    "set content-length to $rq->{rqclen} from header");
 	    }
 
+	    if ( $version >= 1.1 and 
+		grep { lc($_) eq 'chunked' } @{ $kv{'transfer-encoding'} || [] } ) {
+		$rq->{rqchunked} = 1;
+		if ( defined $rq->{rqclen} ) {
+		    # RFC2616 4.4.3: if both given ignore content-length
+		    %TRACE && ($obj||$self)->xtrace(
+			"request content-length and chunked given");
+		    $rq->{rqclen} = undef;
+		}
+	    }
+
 	    if ( $METHODS_WITHOUT_RQBODY{ $rq->{method} } ) {
 		if ( $rq->{rqclen} ) {
 		    ($obj||$self)->fatal(
@@ -292,22 +312,23 @@ sub _in0 {
 		    return $bytes;
 		}
 		$rq->{rqclen} = ( $rq->{method} eq 'CONNECT' ) ? undef : 0;
+		$rq->{rqchunked} = undef;
 	    } elsif ( $METHODS_WITH_RQBODY{ $rq->{method} } ) {
-		if ( ! defined $rq->{rqclen} ) {
+		if ( ! defined $rq->{rqclen} && ! $rq->{rqchunked} ) {
 		    ($obj||$self)->fatal(
-			"content-length must be given with method $rq->{method}",
+			"content-length or transfer-encoding chunked must be given with method $rq->{method}",
 			0,$time);
 		    $rq->{state} |= RQ_ERROR;
 		    return $bytes;
 		}
-	    } else {
+	    } elsif ( ! $rq->{rqchunked} ) {
 		# if not given content-length is considered 0
-		# TODO support chunked encoding from client to server
 		$rq->{rqclen} ||= 0;
 	    }
 
 	    $obj && $obj->in_request_header($hdr,$time, { 
 		content_length => $rq->{rqclen},
+		$rq->{rqchunked} ? ( chunked => 1 ):(),
 		method => $rq->{method},
 		url => $url,
 		version => $version,
@@ -315,7 +336,8 @@ sub _in0 {
 		$bad eq '' ? () : ( junk => $bad ),
 	    });
 
-	    if ( defined $rq->{rqclen} and $rq->{rqclen} == 0 ) {
+	    if ( ! $rq->{rqchunked} and 
+		defined $rq->{rqclen} and $rq->{rqclen} == 0 ) {
 		$DEBUG && $self->xdebug("no content-length - request body done");
 		# no clen - body done
 		$rq->{state} |= RQBDY_DONE;
@@ -344,25 +366,103 @@ sub _in0 {
     # read request body if not done
     if ( $data ne '' and not $rq->{state} & RQBDY_DONE ) {
 	# request body
-	my $l = length($data);
-	if ( $l >= $rq->{rqclen} ) {
-	    $DEBUG && $self->xdebug(
-		"got all request body data $l >= $rq->{rqclen} obj=$obj");
-	    # got all request body
-	    my $body = substr($data,0,$rq->{rqclen},'');
-	    $self->{offset}[0] += $rq->{rqclen};
-	    $bytes += $rq->{rqclen};
-	    $rq->{rqclen} = 0;
-	    $rq->{state} |= RQBDY_DONE; # req body done
-	    $obj && $obj->in_request_body($body,1,$time);
+	if ( my $want = $rq->{rqclen} ) {
+	    my $l = length($data);
+	    if ( $l>=$want) {
+		# got all request body
+		$DEBUG && $self->xdebug("need $want bytes, got all");
+		my $body = substr($data,0,$rq->{rqclen},'');
+		$self->{offset}[0] += $rq->{rqclen};
+		$bytes += $rq->{rqclen};
+		$rq->{rqclen} = 0;
+		if ( ! $rq->{rqchunked} ) {
+		    $rq->{state} |= RQBDY_DONE; # req body done
+		    $obj && $obj->in_request_body($body,1,$time) if $obj;
+		} else {
+		    $obj && $obj->in_request_body($body,0,$time) if $obj;
+		    $rq->{rqchunked} = 2; # get CRLF after chunk
+		}
+	    } else {
+		# only part
+		$DEBUG && $self->xdebug("need $want bytes, got only $l");
+		my $body = substr($data,0,$l,'');
+		$self->{offset}[0] += $l;
+		$bytes += $l;
+		$rq->{rqclen} -= $l;
+		$obj && $obj->in_request_body($body,0,$time);
+	    }
+
+	# Chunking: rfc2616, 3.6.1
 	} else {
-	    $DEBUG && $self->xdebug("got part of request body data $l < $rq->{rqclen}");
-	    # only part
-	    my $body = substr($data,0,$l,'');
-	    $self->{offset}[0] += $l;
-	    $bytes += $l;
-	    $rq->{rqclen} -= $l;
-	    $obj && $obj->in_request_body($body,0,$time);
+	    # [2] must get CRLF after chunk
+	    if ( $rq->{rqchunked} == 2 ) {
+		$DEBUG && $self->xdebug("want CRLF after chunk");
+		if ( $data =~m{\A\r?\n}g ) {
+		    my $n = pos($data);
+		    $self->{offset}[0] += $n;
+		    $bytes += $n;
+		    substr($data,0,$n,'');
+		    $rq->{rqchunked} = 1; # get next chunk header
+		    $DEBUG && $self->xdebug("got CRLF after chunk");
+		} elsif ( length($data)>=2 ) {
+		    ($obj||$self)->fatal("no CRLF after chunk",0,$time);
+		    $self->{error} = 1;
+		    return $bytes;
+		} else {
+		    # need more
+		    return $bytes;
+		}
+	    }
+
+	    # [1] must read chunk header
+	    if ( $rq->{rqchunked} == 1 ) {
+		$DEBUG && $self->xdebug("want chunk header");
+		if ( $data =~m{\A([\da-fA-F]+)[ \t]*(?:;.*)?\r?\n}g ) {
+		    $rq->{rqclen} = hex($1);
+		    my $chdr = substr($data,0,pos($data),'');
+		    $self->{offset}[0] += length($chdr);
+		    $bytes += length($chdr);
+		    $obj->in_chunk_header(0,$chdr,$time) if $obj;
+		    $DEBUG && $self->xdebug(
+			"got chunk header - want $rq->{rqclen} bytes");
+		    if ( ! $rq->{rqclen} ) {
+			# last chunk
+			$rq->{rqchunked} = 3;
+			$obj->in_request_body('',1,$time) if $obj;
+		    }
+		} elsif ( $data =~m{\n} or length($data)>8192 ) {
+		    ($obj||$self)->fatal("invalid chunk header",0,$time);
+		    $self->{error} = 1;
+		    return $bytes;
+		} else {
+		    # need more data
+		    return $bytes;
+		}
+	    }
+
+	    # [3] must read chunk trailer
+	    if ( $rq->{rqchunked} == 3 ) {
+		$DEBUG && $self->xdebug("want chunk trailer");
+		if ( $data =~m{\A
+		    (?:\w[\w\-]*:.*\r?\n(?:[\t\040].*\r?\n)* )*  # field:..+cont
+		    \r?\n
+		}xg) {
+		    $DEBUG && $self->xdebug("got chunk trailer");
+		    my $trailer = substr($data,0,pos($data),'');
+		    $self->{offset}[1] += length($trailer);
+		    $bytes += length($trailer);
+		    $obj->in_chunk_trailer(0,$trailer,$time) if $obj;
+		    $rq->{state} |= RQBDY_DONE; # request done
+		} elsif ( $data =~m{\n\r?\n} or length($data)>2**16 ) {
+		    ($obj||$self)->fatal("invalid chunk trailer",0,$time);
+		    $self->{error} = 1;
+		    return $bytes;
+		} else {
+		    # need more
+		    $DEBUG && $self->xdebug("need more bytes for chunk trailer");
+		    return $bytes
+		}
+	    }
 	}
     }
 
@@ -396,8 +496,8 @@ sub _in1 {
 	} elsif ( my $obj = $rqs->[-1]{obj} ) {
 	    $obj->in_response_body([ gap => $len ],$eof,$time);
 	}
-	$rqs->[-1]{rqclen} -= $len;
-	if ( ! $rqs->[-1]{rqclen} && !  $rqs->[-1]{rpchunked} ) {
+	$rqs->[-1]{rpclen} -= $len;
+	if ( ! $rqs->[-1]{rpclen} && ! $rqs->[-1]{rpchunked} ) {
 	    $rqs->[-1]{state} |= RPBDY_DONE;
 	}
 	return $len;
@@ -476,6 +576,23 @@ sub _in1 {
 	    my $n = length($hdr);
 	    $bytes += $n;
 	    $self->{offset}[1] += $n;
+
+	    if ( $code >= 100 and $code <= 199 ) {
+		# preliminary response, we are not done!
+		$DEBUG && $self->xdebug("got preliminary response");
+		$obj && $obj->in_response_header($hdr,$time,{
+		    content_length => 0,
+		    version => $version,
+		    code => $code,
+		    reason => $reason,
+		    fields => \%kv,
+		    $bad eq '' ? () : ( junk => $bad ),
+		});
+
+		# preliminary responses do not contain any body
+		goto READ_DATA;
+	    }
+
 	    $rq->{state} |= RPHDR_DONE; # response header done
 
 	    if ( my $cl = $kv{'content-length'} ) {
@@ -489,7 +606,8 @@ sub _in1 {
 		$rq->{rpclen} = $cl->[0];
 	    }
 
-	    if ( grep { m{\bchunked\b} } @{ $kv{'transfer-encoding'} || [] } ) {
+	    if ( $version >= 1.1 and 
+		grep { lc($_) eq 'chunked' } @{ $kv{'transfer-encoding'} || [] } ) {
 		$rq->{rpchunked} = 1;
 	    }
 
@@ -505,7 +623,8 @@ sub _in1 {
 
 	    if ( $rq->{rpchunked} and defined $rq->{rpclen} ) {
 		# RFC2616 4.4.3: if both given ignore content-length
-		%TRACE && ($obj||$self)->xtrace("content-length and chunked given");
+		%TRACE && ($obj||$self)->xtrace(
+		    "response content-length and chunked given");
 		$rq->{rpclen} = undef;
 	    }
 
@@ -572,7 +691,6 @@ sub _in1 {
 		    # request done
 		    $obj->in_response_body($body,1,$time) if $obj;
 		    pop(@$rqs);
-		    goto READ_DATA;
 		} else {
 		    $obj->in_response_body($body,0,$time) if $obj;
 		    $rq->{rpchunked} = 2; # get CRLF after chunk
@@ -627,7 +745,7 @@ sub _in1 {
 		    my $chdr = substr($data,0,pos($data),'');
 		    $self->{offset}[1] += length($chdr);
 		    $bytes += length($chdr);
-		    $obj->in_chunk_header($chdr,$time) if $obj;
+		    $obj->in_chunk_header(1,$chdr,$time) if $obj;
 		    $DEBUG && $self->xdebug(
 			"got chunk header - want $rq->{rpclen} bytes");
 		    if ( ! $rq->{rpclen} ) {
@@ -656,9 +774,8 @@ sub _in1 {
 		    my $trailer = substr($data,0,pos($data),'');
 		    $self->{offset}[1] += length($trailer);
 		    $bytes += length($trailer);
-		    $obj->in_chunk_trailer($trailer,$time) if $obj;
+		    $obj->in_chunk_trailer(1,$trailer,$time) if $obj;
 		    pop(@$rqs); # request done
-		    goto READ_DATA;
 		} elsif ( $data =~m{\n\r?\n} or length($data)>2**16 ) {
 		    ($obj||$self)->fatal("invalid chunk trailer",1,$time);
 		    $self->{error} = 1;
@@ -835,6 +952,8 @@ $header is the string of the header.
 
 =item content_length - length of request body
 
+=item chunked - true if body uses transfer encoding chunked
+
 =back
 
 
@@ -884,19 +1003,19 @@ cannot be a body.
 $data can be C<< [ 'gap' => $len ] >> if the input to this
 layer were gaps.
 
-=item $request->in_chunk_header($header,$time)
+=item $request->in_chunk_header($dir,$header,$time)
 
 will be called with the chunk header for chunked encoding.
 Usually one is not interested in the chunk framing, only in the content so that
 this method will be empty.
 Will be called before the chunk data.
 
-=item $request->in_chunk_trailer($trailer,$time)
+=item $request->in_chunk_trailer($dir,$trailer,$time)
 
 will be called with the chunk trailer for chunked encoding.
 Usually one is not interested in the chunk framing, only in the content so that
 this method will be empty.
-Will be called after in_response_body got called with eof true.
+Will be called after in_response_body/in_request_body got called with eof true.
 
 =item $request->in_data($dir,$data,$eof,$time)
 

@@ -19,6 +19,7 @@ Makefile.PL
 MANIFEST
 README
 t/01_load.t
+t/02_l7http.t
 tools/httpflow.pl
 tools/httpflow/privFileCache.pm
 tools/httpflow/privHTTPConn.pm
