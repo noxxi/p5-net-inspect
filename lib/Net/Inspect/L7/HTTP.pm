@@ -541,6 +541,13 @@ sub _in1 {
     }
 
     if ( ! @$rqs ) {
+	if ( $data =~s{\A([\r\n]+)}{} ) {
+	    # skip newlines after request because newlines at beginning of
+	    # new request are allowed, stupid
+	    $bytes += length($1);
+	    goto READ_DATA;
+	}
+
 	$self->fatal('data from server w/o request',1,$time);
 	$self->{error} = 1;
 	return $bytes;
