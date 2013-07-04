@@ -1,3 +1,5 @@
+0.300 2013/07/04
+- clearer handling of end-of-body in HTTP for in_response_body, in_request_body calls
 0.29 2013/04/09
 - L7::HTTP
   - support for 1xx responses

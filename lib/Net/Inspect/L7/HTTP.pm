@@ -26,7 +26,7 @@ use constant {
     RQBDY_DONE => 0b00010,
     RQ_ERROR   => 0b00100,
     RPHDR_DONE => 0b01000,
-    RPBDY_DONE => 0b10000, # will be done on EOF
+    RPBDY_DONE_ON_EOF => 0b10000,
 };
 
 # rfc2616, 3.6
@@ -377,9 +377,9 @@ sub _in0 {
 		$rq->{rqclen} = 0;
 		if ( ! $rq->{rqchunked} ) {
 		    $rq->{state} |= RQBDY_DONE; # req body done
-		    $obj && $obj->in_request_body($body,1,$time) if $obj;
+		    $obj && $obj->in_request_body($body,1,$time) 
 		} else {
-		    $obj && $obj->in_request_body($body,0,$time) if $obj;
+		    $obj && $obj->in_request_body($body,$eof,$time);
 		    $rq->{rqchunked} = 2; # get CRLF after chunk
 		}
 	    } else {
@@ -428,7 +428,7 @@ sub _in0 {
 		    if ( ! $rq->{rqclen} ) {
 			# last chunk
 			$rq->{rqchunked} = 3;
-			$obj->in_request_body('',1,$time) if $obj;
+			$obj && $obj->in_request_body('',1,$time);
 		    }
 		} elsif ( $data =~m{\n} or length($data)>8192 ) {
 		    ($obj||$self)->fatal("invalid chunk header",0,$time);
@@ -455,6 +455,12 @@ sub _in0 {
 		    $rq->{state} |= RQBDY_DONE; # request done
 		} elsif ( $data =~m{\n\r?\n} or length($data)>2**16 ) {
 		    ($obj||$self)->fatal("invalid chunk trailer",0,$time);
+		    $self->{error} = 1;
+		    return $bytes;
+		} elsif ( $eof ) {
+		    # not fatal, because we got all data
+		    %TRACE && ($obj||$self)->xtrace(
+			"eof before end of chunk trailer");
 		    $self->{error} = 1;
 		    return $bytes;
 		} else {
@@ -490,15 +496,19 @@ sub _in1 {
 	croak 'no open response' if ! @$rqs;
 	croak 'existing error in request' if $rqs->[-1]{state} & RQ_ERROR;
 	if ( ! defined $rqs->[-1]{rpclen} ) {
-	    croak "not in body-til-eof"  if not $rqs->[-1]{state} & RPBDY_DONE;
+	    croak "not in body-til-eof"  
+		if not $rqs->[-1]{state} & RPBDY_DONE_ON_EOF;
 	} elsif ( $rqs->[-1]{rpclen} < $len ) {
 	    croak "gap ($len) wider than response body (chunk) $rqs->[-1]{rpclen}";
 	} elsif ( my $obj = $rqs->[-1]{obj} ) {
-	    $obj->in_response_body([ gap => $len ],$eof,$time);
-	}
-	$rqs->[-1]{rpclen} -= $len;
-	if ( ! $rqs->[-1]{rpclen} && ! $rqs->[-1]{rpchunked} ) {
-	    $rqs->[-1]{state} |= RPBDY_DONE;
+	    $rqs->[-1]{rpclen} -= $len;
+	    if ( $rqs->[-1]{rpclen} or $rqs->[-1]{rpclen}{rpchunked} ) {
+		$obj->in_response_body([ gap => $len ],0,$time);
+	    } else {
+		# done with request
+		pop(@$rqs);
+		$obj->in_response_body([ gap => $len ],1,$time);
+	    }
 	}
 	return $len;
     }
@@ -522,18 +532,17 @@ sub _in1 {
 
 	# handle EOF
 	# check if we got response body for last request
-	if ( @$rqs && $rqs->[-1]{state} & RPBDY_DONE ) {
+	if ( @$rqs && $rqs->[-1]{state} & RPBDY_DONE_ON_EOF ) {
 	    # response body done on eof
-	    $rqs->[-1]{obj}->in_response_body('',1,$time) if $rqs->[-1]{obj};
-	    pop(@$rqs);
+	    my $rq = pop(@$rqs);
+	    $rq->{obj}->in_response_body('',1,$time) if $rq->{obj};
 	    return $bytes;
 	}
 	if ( @$rqs ) {
 	    # response body not done yet
-	    %TRACE && ($rqs->[-1]{obj}||$self)->xtrace("response body not done but eof");
-	    ($rqs->[-1]{obj}||$self)->fatal('eof but response body not done',
-		1,$time);
-	    pop(@$rqs);
+	    my $rq = pop(@$rqs);
+	    %TRACE && ($rq->{obj}||$self)->xtrace("response body not done but eof");
+	    ($rq->{obj}||$self)->fatal('eof but response body not done', 1,$time);
 	    return $bytes;
 	}
 
@@ -650,13 +659,13 @@ sub _in1 {
 	    if ( defined $rq->{rpclen} and $rq->{rpclen} == 0 ) {
 		# clen == 0 -> body done
 		$DEBUG && $self->xdebug("no response body");
-		$obj && $obj->in_response_body('',1,$time);
 		pop(@$rqs);
+		$obj && $obj->in_response_body('',1,$time);
 		goto READ_DATA;
 	    }
 
 	    if ( ! $rq->{rpchunked} && ! $rq->{rpclen} ) {
-		$rq->{state} |= RPBDY_DONE; # body done when eof
+		$rq->{state} |= RPBDY_DONE_ON_EOF; # body done when eof
 	    }
 
 	} elsif ( $data =~m{[^\n]\r?\n\r?\n}g ) {
@@ -696,8 +705,8 @@ sub _in1 {
 		$rq->{rpclen} = 0;
 		if ( ! $rq->{rpchunked} ) {
 		    # request done
-		    $obj->in_response_body($body,1,$time) if $obj;
 		    pop(@$rqs);
+		    $obj && $obj->in_response_body($body,1,$time);
 		} else {
 		    $obj->in_response_body($body,0,$time) if $obj;
 		    $rq->{rpchunked} = 2; # get CRLF after chunk
@@ -713,16 +722,19 @@ sub _in1 {
 	    }
 
 	# no content-length, no chunk: must read until eof
-	} elsif ( ! $rq->{rpchunked} ) {
+	} elsif ( $rq->{state} & RPBDY_DONE_ON_EOF ) {
 	    $DEBUG && $self->xdebug("read until eof");
 	    $self->{offset}[1] += length($data);
 	    $bytes += length($data);
+	    pop(@$rqs) if $eof; # request done
 	    $obj->in_response_body($data,$eof,$time) if $obj;
 	    $data = '';
-	    pop(@$rqs) if $eof; # request done
 	    return $bytes;
 
 	# Chunking: rfc2616, 3.6.1
+	} elsif ( ! $rq->{rpchunked} ) {
+	    # should not happen
+	    die "no content-length and no chunked - why we are here?";
 	} else {
 	    # [2] must get CRLF after chunk
 	    if ( $rq->{rpchunked} == 2 ) {
@@ -758,7 +770,7 @@ sub _in1 {
 		    if ( ! $rq->{rpclen} ) {
 			# last chunk
 			$rq->{rpchunked} = 3;
-			$obj->in_response_body('',1,$time) if $obj;
+			$obj && $obj->in_response_body('',1,$time);
 		    }
 		} elsif ( $data =~m{\n} or length($data)>8192 ) {
 		    ($obj||$self)->fatal("invalid chunk header",1,$time);
@@ -989,23 +1001,25 @@ $header is the string of the header.
 
 =back
 
-=item $request->in_request_body($data,$eof,$time)
+=item $request->in_request_body($data,$eobody,$time)
 
 Called for a chunk of data of the request body.
-$eof is true if this is the last chunk.
-If no request body is given it will be once called with '' as data,
-except for CONNECT, Upgrade etc where there cannot be a body.
+$eobody is true if this is the last chunk of the request body.
+If the request body is empty the method will be called once with C<''>.
+If no body exists because of CONNECT or HTTP Upgrade C<in_data> will be called,
+not C<in_request_body>.
 
 $data can be C<< [ 'gap' => $len ] >> if the input to this
 layer were gaps.
 
-=item $request->in_response_body($data,$eof,$time)
+=item $request->in_response_body($data,$eobody,$time)
 
 Called for a chunk of data of the response body.
-$eof is true if this is the last chunk.
-It will be called with data '' and eof true if no body is given or if the last
-chunk of chunked encoding was found, except for CONNECT, Upgrade etc where there
-cannot be a body.
+$eof is true if this is the last chunk of the connection.
+$eobody is true if this is the last chunk of the response body.
+If the response body is empty the method will be called once with C<''>.
+If no body exists because of CONNECT or HTTP Upgrade C<in_data> will be called,
+not C<in_response_body>.
 
 $data can be C<< [ 'gap' => $len ] >> if the input to this
 layer were gaps.
