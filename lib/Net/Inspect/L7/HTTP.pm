@@ -844,10 +844,13 @@ sub new_request {
     return $self->{upper_flow}->new_request(@_,$self)
 }
 
-# return number of open requests
+# return open requests
 sub open_requests {
     my $self = shift;
-    return 0 + @{$self->{requests}};
+    my @rq = @_ ? @{$self->{requests}}[@_] : @{$self->{requests}};
+    return wantarray 
+	? map { $_->{obj} ? ($_->{obj}):() } @rq
+	: 0 + @rq;
 }
 
 sub fatal {
@@ -873,16 +876,18 @@ sub xdebug {
 }
 
 sub dump_state {
-    $DEBUG or return;
+    $DEBUG or defined wantarray or return;
     my $self = shift;
     my $m = $self->{meta};
-    $self->xdebug("%s.%d -> %s.%d",
+    my $msg = sprintf("%s.%d -> %s.%d",
 	$m->{saddr},$m->{sport},$m->{daddr},$m->{dport});
     my $rqs = $self->{requests};
     for( my $i=0;$i<@$rqs;$i++) {
-	$self->xdebug("request#$i state=%05b %s",
+	$msg .= sprintf("request#$i state=%05b %s",
 	    $rqs->[$i]{state},$rqs->[$i]{info});
     }
+    return $msg if defined wantarray;
+    $self->xdebug($msg);
 }
 
 1;
@@ -1070,16 +1075,22 @@ Helpful methods
 
 =item $connection->dump_state
 
-dumps the state of the open connections via xdebug
+collects the state of the open connections.
+If defined wantarray it will return a message, otherwise output it via xdebug
 
 =item $connection->offset($dir)
 
 returns the current offset in the data stream, that is the position
 behind the within the in_* methods forwarded data.
 
-=item $connection->open_requests
+=item $connection->open_requests(@index)
 
-returns the number of open requests, if any.
+in array context returns the objects for the open requests, in scalar
+context the number of open requests.
+If index is given only the specified objects will be returned, e.g.
+index -1 is the object currently receiving response data while index 0
+specifies the object currently receiving request data (both are the
+same unless pipelining is used)
 
 =back
 

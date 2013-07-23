@@ -1,3 +1,8 @@
+0.302 2013/07/23
+- L7::HTTP::dump_state will return message if defined wantarray instead of
+  writing into debug
+0.301 2013/07/05
+- L7::HTTP::open_requests can now return (selected) request objects
 0.300 2013/07/04
 - clearer handling of end-of-body in HTTP for in_response_body, in_request_body calls
 0.29 2013/04/09
