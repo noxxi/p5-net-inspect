@@ -161,14 +161,19 @@ sub pktin {
 		my $pkt = delete $pkts->{$xsn};
 		# merge packets which came later but are earlier in the stream
 		# into $pkt
-		while (@$obuf) {
-		    last if $obuf->[-1][1] < $pkt->[1]; # earlier in time
-		    $pkt->[0] = pop(@$obuf)->[0].$pkt->[0];
+		if ( @$obuf && $obuf->[-1][1] >= $pkt->[1] ) {
+		    # merge with existing entry
+		    $obuf->[-1][0] .= $pkt->[0]
+		} else {
+		    # create new entry in obuf
+		    push @$obuf,$pkt
 		}
-		push @$obuf,$pkt;
 
 		if ( $pkt->[0] ne '' ) {
 		    $xsn = ( $xsn + length($pkt->[0])) % 2**32;
+		    # ACK to FIN might ack previous packets too, so insert
+		    # empty dummy packet for FIN if necessary
+		    $pkts->{$xsn} ||= [ '',$pkt->[1] ];
 
 		} else {
 		    debug("got ACK for FIN($odir)");
@@ -210,7 +215,7 @@ sub pktin {
 	    $conn->[$odir][0] = $xsn;
 	    $conn->[$odir][3] |= 0b1000 if $eof;
 
-	    # forward data 
+	    # forward data
 	    if ( my $obj = $conn->[2] ) {
 		while ( my $buf = shift(@$obuf) ) {
 		    my $n = $obj->in($odir,$buf->[0],$eof,$buf->[1]);

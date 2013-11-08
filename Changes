@@ -1,3 +1,7 @@
+0.303 2013/11/08
+- fix L4::TCP for case, where FIN+ACK not only acked FIN but also previous data
+- tools/tcpudpflow: add feature to write each flow as single pcap file (needs
+  Net::PcapWriter) instead of one file for each direction
 0.302 2013/07/23
 - L7::HTTP::dump_state will return message if defined wantarray instead of
   writing into debug

@@ -879,7 +879,7 @@ sub dump_state {
     $DEBUG or defined wantarray or return;
     my $self = shift;
     my $m = $self->{meta};
-    my $msg = sprintf("%s.%d -> %s.%d",
+    my $msg = sprintf("%s.%d -> %s.%d ",
 	$m->{saddr},$m->{sport},$m->{daddr},$m->{dport});
     my $rqs = $self->{requests};
     for( my $i=0;$i<@$rqs;$i++) {

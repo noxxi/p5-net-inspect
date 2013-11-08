@@ -14,7 +14,7 @@ use Net::Inspect::L4::UDP;
 ############################################################################
 # Options
 ############################################################################
-my ($infile,$dev,$nopromisc,@trace,$outdir);
+my ($infile,$dev,$nopromisc,@trace,$outdir,$format_pcap);
 GetOptions(
     'r=s' => \$infile,
     'i=s' => \$dev,
@@ -23,12 +23,18 @@ GetOptions(
     'd|debug' => \$DEBUG,
     'T|trace=s' => sub { push @trace,split(m/,/,$_[1]) },
     'D|dir=s' => \$outdir,
+    'pcap' => \$format_pcap,
 ) or usage();
 usage('only interface or file can be set') if $infile and $dev;
 $infile ||= '/dev/stdin' if ! $dev;
 my $pcapfilter = join(' ',@ARGV);
 $TRACE{$_} = 1 for(@trace);
 die "cannot write to $outdir: $!" if $outdir and ! -w $outdir || ! -d _;
+
+if ($format_pcap) {
+    eval { require Net::PcapWriter }
+	or die "need Net::PcapWriter for writing pcap files"
+}
 
 sub usage {
     print STDERR "ERROR: @_\n" if @_;
@@ -42,8 +48,10 @@ Options:
     -r file.pcap     read pcap from file
     -i dev           read pcap from dev
     -p               do net set dev into promisc mode
-    -D dir           extract data into dir, right now only for http requests
-		     and responses
+    -D dir           extract data into dir, each flow as a sperate tcp-*
+		     or udp-* files, either with seperate files for both
+		     direction or with --pcap as pcap files
+    --pcap           write each flow as file in pcap format
     -T trace         trace messages are enabled in the modules, option can
 		     be given multiple times, trace is last part of module name,
 		     e.g. tcp, rawip
@@ -70,8 +78,38 @@ if ( $pcapfilter ) {
 # parse hierarchy
 ############################################################################
 
-my $tcp = Net::Inspect::L4::TCP->new( ConnWriter->new("$outdir/tcp-"));
-my $udp = Net::Inspect::L4::UDP->new( ConnWriter->new("$outdir/udp-"));
+my $writer = sub {
+    my $proto = shift;
+    return sub {
+	my $conn = shift;
+	my $fbase = sprintf("%s/%s%05d.%d-%s.%s-%s.%s",
+	    $outdir,
+	    $proto,
+	    $conn->{flowid},
+	    $conn->{time},
+	    $conn->{saddr}, $conn->{sport},
+	    $conn->{daddr}, $conn->{dport},
+	);
+	if ( $format_pcap ) {
+	    my $w = Net::PcapWriter->new("$fbase.pcap") or die $!;
+	    if ( $proto eq 'tcp' ) {
+		return $w->tcp_conn(
+		    $conn->{saddr}, $conn->{sport},
+		    $conn->{daddr}, $conn->{dport},
+		);
+	    } else {
+		return $w->tcp_conn(
+		    $conn->{saddr}, $conn->{sport},
+		    $conn->{daddr}, $conn->{dport},
+		);
+	    }
+	}
+	return myFileWriter->new($fbase);
+    }
+};
+
+my $tcp = Net::Inspect::L4::TCP->new( ConnWriter->new( $writer->('tcp')));
+my $udp = Net::Inspect::L4::UDP->new( ConnWriter->new( $writer->('udp')));
 my $raw = Net::Inspect::L3::IP->new([$tcp,$udp]);
 my $pc  = Net::Inspect::L2::Pcap->new($pcap,$raw);
 
@@ -89,20 +127,23 @@ pcap_loop($pcap,-1,sub {
 },undef);
 
 
+############################################################################
+# Connection Object
+############################################################################
 package ConnWriter;
 use base 'Net::Inspect::Connection';
-use fields qw(prefix flowid saddr sport daddr dport time);
+use fields qw(flowid saddr sport daddr dport time writer);
 use Net::Inspect::Debug;
 
 my $flowid = 0;
 sub new {
-    my ($class,$dir) = @_;
+    my ($class,$wsub) = @_;
     my $self = $class->SUPER::new;
     if ( ref $class ) {
-	$self->{prefix} = $dir || $class->{prefix};
+	$self->{writer} = $wsub || $class->{writer};
 	$self->{flowid} = ++$flowid;
     } else {
-	$self->{prefix} = $dir;
+	$self->{writer} = $wsub;
     }
     return $self;
 }
@@ -111,28 +152,21 @@ sub syn { 1 }
 sub new_connection {
     my ($self,$meta) = @_;
     my $obj = $self->new; # clones attached flows
-    %$obj = ( %$obj, 
+    %$obj = ( %$obj,
 	saddr => $meta->{saddr},
 	sport => $meta->{sport},
 	daddr => $meta->{daddr},
 	dport => $meta->{dport},
 	time  => $meta->{time},
     );
+    $obj->{writer} = $self->{writer}($obj);
     return $obj;
 }
 
 sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
-    my $fname = sprintf("%s%05d.%d-%s.%s-%s.%s-%d",
-	$self->{prefix},
-	$self->{flowid},
-	$self->{time},
-	$self->{saddr}, $self->{sport},
-	$self->{daddr}, $self->{dport},
-	$dir
-    );
-    open( my $fh,'>>',$fname ) or die "open $fname: $!";
-    print $fh $data;
+    $self->{writer}->write($dir,$data,$time) if $data ne '';
+    $self->{writer}->shutdown($dir,$time) if $eof;
     return length($data);
 }
 
@@ -157,3 +191,18 @@ sub fatal {
     my ($self,$reason) = @_;
     warn "fatal: $reason\n";
 }
+
+############################################################################
+# myFileWriter
+############################################################################
+package myFileWriter;
+sub new {
+    my ($class,$fbase) = @_;
+    return bless \$fbase,$class;
+}
+sub write {
+    my ($self,$dir,$data,$time) = @_;
+    open( my $fh,'>>',"$$self-$dir" ) or die "open $$self-$dir: $!";
+    print $fh $data;
+}
+sub shutdown {}
