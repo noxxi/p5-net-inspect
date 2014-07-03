@@ -12,6 +12,21 @@ use fields qw(frag frag_timeout);
 use Net::Inspect::Debug;
 use Socket;
 
+my $inet6_ntop;
+BEGIN {
+    $inet6_ntop = eval {
+	Socket->VERSION(1.95);
+	Socket::inet_ntop( AF_INET6(),"\x0"x16)
+	    && sub { Socket::inet_ntop(AF_INET6(),shift) };
+    } || eval {
+	require Socket6;
+	Socket6::inet_ntop( Socket6::AF_INET6(),"\x0"x16)
+	    && sub { Socket6::inet_ntop(Socket6::AF_INET6(),shift) };
+    };
+    *pktin6 = $inet6_ntop ? \&_pktin6 : \&_pktin6_unsupported;
+}
+
+
 # field frag: hash indexed by {ip.id,saddr,daddr} with values
 # [ $pos, \@fragments, $expire ]
 #   $pos - up to which position defragmentation is done
@@ -47,8 +62,7 @@ sub pktin {
 	$self->pktin4($data,$time);
 	return 1;
     } elsif ($ver == 6) {
-	# no IPv6 implemented yet
-	trace("cannot handle ipv6");
+	$self->pktin6($data,$time);
 	return 0;
     } else {
 	trace("bad IP version $ver");
@@ -101,6 +115,7 @@ sub pktin4 {
 		id    => $id,
 		ttl   => $ttl,
 		qos   => $qos,
+		ver   => 4,
 	    });
 	} else {
 	    $fragments = $self->{frag}{$id,$saddr,$daddr} ||= [0,[]];
@@ -170,6 +185,54 @@ sub pktin4 {
     }
 }
 
+############################################################################
+# IPv6 packets - fragmentation currently not supported
+############################################################################
+sub _pktin6 {
+    my Net::Inspect::L3::IP $self = shift;
+    my ($data,$time) = @_;
+
+    # parse and strip IPv6 header
+    my ($vtf,$len,$nextheader,$ttl,$saddr,$daddr) = unpack('NnCCA16A16',
+	substr($data,0,40,''));
+
+    if ($len > length($data)) {
+	trace("short packet len=".length($data)."/$len");
+	return;
+    } elsif ( $len < length($data)) {
+	substr($data,$len) = '';
+    }
+
+    my $tclass = ( $vtf & 0x0ff00000 ) >> 20;
+    my $flowlabel = $vtf & 0xfffff;
+
+    my $proto;
+    while ( $nextheader != 59 ) {
+	if ($nextheader == 6 || $nextheader == 17) {
+	    $proto = $nextheader;
+	    last;
+	}
+	($nextheader,$len) = unpack("CC",$data);
+	substr($data,0,$len+1,''); # skip extension header
+    }
+
+    return $self->{upper_flow}->pktin( $data, {
+	time  => $time,
+	saddr => $inet6_ntop->($saddr),
+	daddr => $inet6_ntop->($daddr),
+	proto => $proto,
+	ttl   => $ttl,
+	qos   => $tclass,
+	flowlabel => $flowlabel,
+	ver   => 6,
+    });
+}
+
+sub _pktin6_unsupported {
+    trace("IPv6 unsupported, need to install recent Socket or Socket6 module");
+}
+
+
 1;
 
 
@@ -236,21 +299,26 @@ the addresses of the sender and destination of the packet
 
 protocol of the packet
 
-=item id
-
-id of the packet
-
 =item qos
 
-QoS flags of the packet
+QoS (IPv4) flags or Type Of Service (IPv6) of the packet
 
 =item ttl
 
-TTL counter of the packet
+TTL (IPv4) or hoplimit (IPv6) counter of the packet
+
+=item flowlabel
+
+flow label (IPv6 only)
+
+=item id
+
+id of the packet (IPv4 only)
 
 =item fragments
 
-number of fragments or undef if packet wasn't fragmented
+Number of fragments or undef if packet wasn't fragmented (IPv4 only)
+
 
 =back
 
@@ -258,4 +326,3 @@ number of fragments or undef if packet wasn't fragmented
 
 =head1 LIMITS
 
-for now only IPv4 is implemented
