@@ -208,12 +208,13 @@ sub _pktin6 {
 
     my $proto;
     while ( $nextheader != 59 ) {
-	if ($nextheader == 6 || $nextheader == 17) {
+	if ($nextheader == 6 || $nextheader == 17 || $nextheader == 58) {
 	    $proto = $nextheader;
 	    last;
 	}
 	($nextheader,$len) = unpack("CC",$data);
 	substr($data,0,$len+1,''); # skip extension header
+	return if $data eq '';
     }
 
     return $self->{upper_flow}->pktin( $data, {
