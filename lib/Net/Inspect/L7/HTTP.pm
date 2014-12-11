@@ -251,7 +251,7 @@ sub _in0 {
 
 	# leading newlines at beginning of request are legally ignored junk
 	if ( $data =~s{\A([\r\n]+)}{} ) {
-	    ($obj|$self)->in_junk(0,$1,0,$time);
+	    ($obj||$self)->in_junk(0,$1,0,$time);
 	}
 
 	$DEBUG && $self->xdebug("need to read request header");
@@ -571,7 +571,7 @@ sub _in1 {
 
 	# leading newlines at beginning of response are legally ignored junk
 	if ( $data =~s{\A([\r\n]+)}{} ) {
-	    ($obj|$self)->in_junk(1,$1,0,$time);
+	    ($obj||$self)->in_junk(1,$1,0,$time);
 	}
 
 	# no response header yet, check if data contains it

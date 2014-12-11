@@ -1,3 +1,5 @@
+0.306 2014/12/11
+- L7::HTTP - fix bug when calling in_junk
 0.305 2014/11/12
 - Net::Inspect::IP: don't endless-loop if we don't find the expected
   protocol header in the IPv6 headers. Accept ICMPv6 as protocol header.
