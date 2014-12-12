@@ -20,6 +20,25 @@ use fields (
     'offset',   # offset in data stream 
 );
 
+use Exporter 'import';
+our (@EXPORT_OK,%EXPORT_TAGS);
+{
+    %EXPORT_TAGS = (
+	need_body => [qw(
+	    METHODS_WITHOUT_RQBODY METHODS_WITH_RQBODY METHODS_WITHOUT_RPBODY
+	    CODE_WITHOUT_RPBODY
+	)]
+    );
+    push @EXPORT_OK,@$_ for (values %EXPORT_TAGS);
+    push @EXPORT_OK,'parse_hdrfields';
+}
+
+use constant {
+    METHODS_WITHOUT_RQBODY => [qw(GET HEAD DELETE CONNECT)],
+    METHODS_WITH_RQBODY    => [qw(POST PUT)],
+    METHODS_WITHOUT_RPBODY => [qw(HEAD)],
+    CODE_WITHOUT_RPBODY    => [100..199, 204, 205, 304],
+};
 
 use constant {
     RQHDR_DONE => 0b00001,
@@ -48,10 +67,10 @@ my $token_value_cont = qr{
 # squid seems to just strip invalid headers, try the same
 my $xtoken = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f-\xff][^:[:^print:]]*};
 
-my %METHODS_WITHOUT_RQBODY = map { ($_,1) } qw( GET HEAD DELETE CONNECT );
-my %METHODS_WITH_RQBODY = map { ($_,1) } qw( POST PUT );
-my %CODE_WITHOUT_RPBODY = map { ($_,1) } (100..199, 204, 205, 304);
-my %METHODS_WITHOUT_RPBODY = map { ($_,1) } qw(HEAD);
+my %METHODS_WITHOUT_RQBODY = map { ($_,1) } @{METHODS_WITHOUT_RPBODY()};
+my %METHODS_WITH_RQBODY    = map { ($_,1) } @{METHODS_WITH_RQBODY()};
+my %METHODS_WITHOUT_RPBODY = map { ($_,1) } @{METHODS_WITHOUT_RPBODY()};
+my %CODE_WITHOUT_RPBODY    = map { ($_,1) } @{CODE_WITHOUT_RPBODY()};
 
 sub guess_protocol {
     my ($self,$guess,$dir,$data,$eof,$time,$meta) = @_;
@@ -271,7 +290,7 @@ sub _in0 {
 	    $DEBUG && $self->xdebug("got request header $rq->{info}");
 
 	    my %kv;
-	    my $bad = _parse_hdrfields($5,\%kv);
+	    my $bad = parse_hdrfields($5,\%kv);
 	    %TRACE && ($obj||$self)->xtrace("invalid request header data: $bad") 
 		if $bad ne '';
 
@@ -585,7 +604,7 @@ sub _in1 {
 	)}{}sxi) {
 	    my ($hdr,$version,$code,$reason) = ($1,$2,$3,$4);
 	    my %kv;
-	    my $bad = _parse_hdrfields($5,\%kv);
+	    my $bad = parse_hdrfields($5,\%kv);
 	    %TRACE && ($obj||$self)->xtrace("invalid response header data: $bad") 
 		if $bad ne '';
 
@@ -812,7 +831,7 @@ sub _in1 {
 }
 
 # parse and normalize header
-sub _parse_hdrfields {
+sub parse_hdrfields {
     my ($hdr,$fields) = @_;
     return '' if ! defined $hdr;
     my $bad = '';
@@ -1092,6 +1111,50 @@ If index is given only the specified objects will be returned, e.g.
 index -1 is the object currently receiving response data while index 0
 specifies the object currently receiving request data (both are the
 same unless pipelining is used)
+
+=back
+
+=head1 exportable utility functions and constants
+
+=over 4
+
+=item METHODS_WITHOUT_RQBODY
+
+This constant is an array reference of all request methods which will not have a
+request body, i.e. which have an implicit and non-changeble content-length of 0.
+
+=item METHODS_WITH_RQBODY
+
+This constant is an array reference of all request methods which must have a
+specified request body, even if the content-lenth is explicitly set to 0.
+
+Methods which are not in METHODS_WITH_RQBODY or METHODS_WITHOUT_RQBODY might
+have a request body, that is if no content-length is explicitly given (or
+chunked transfer encoding is used) it is assumed that they don't have a body.
+
+=item METHODS_WITHOUT_RPBODY
+
+This constant is an array reference of all request methods which don't require a
+response body, i.e. which have an implicit and non-changeble content-length of 0.
+
+=item CODE_WITHOUT_RPBODY
+
+This constant is an array reference of all response codes which will not have a
+response body, i.e. which have an implicit and non-changeble content-length of 0.
+
+=item parse_hdr_fields($header,\%fields) -> $bad_header
+
+This function parses the given message header (without request or status line!)
+and extracts the C<key:value> pairs into C<%fields>. Each key in C<%fields> is
+the lower-case representation of the key from the HTTP message and the value in
+C<%fields> is a list with all values, i.e. a list with a single element if the
+specific key was only used once the header, but with multiple elements if the
+key was used multiple times.
+Any continuation lines will be transformed into a single line.
+
+It will return any remaining data in C<$header> which could not be interpreted
+as proper C<key:value> pairs. If the message contains no errors it will thus
+return C<''>.
 
 =back
 

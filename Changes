@@ -1,3 +1,5 @@
+0.307 2014/12/12
+- L7::HTTP - export some functionality for external use
 0.306 2014/12/11
 - L7::HTTP - fix bug when calling in_junk
 0.305 2014/11/12
