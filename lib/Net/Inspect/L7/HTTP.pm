@@ -927,6 +927,7 @@ Hooks provided:
 =item $connection->in($dir,$data,$eof,$time)
 
 Processes new data and returns number of bytes processed.
+Any data not processed must be sent again with the next call.
 
 C<$data> are the data as string.
 In some cases $data can be C<< [ 'gap' => $len ] >>, e.g. only the information,

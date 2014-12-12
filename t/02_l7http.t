@@ -47,6 +47,14 @@ my @tests = (
 	response_body => '',
     ],
 
+    [ "HTTP header in multiple parts (2)",
+	0 => "GET http://foo",
+	0 => "/bar HTTP/1.0\r\n",
+	0 => "\r\n",
+	request_header => "GET http://foo/bar HTTP/1.0\r\n\r\n",
+	request_body => '',
+    ],
+
     [ "chunked response",
 	0 => "GET / HTTP/1.1\r\n\r\n",
 	request_header => "GET / HTTP/1.1\r\n\r\n",
