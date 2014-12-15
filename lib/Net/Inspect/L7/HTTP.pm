@@ -307,6 +307,13 @@ sub _in0 {
 		    $rq->{state} |= RQ_ERROR;
 		    return $bytes;
 		}
+		if ($cl->[0] !~m{^(\d+)$}) {
+		    ($obj||$self)->fatal(
+			"invalid content-length '$cl->[0]' in request",
+			0,$time);
+		    $rq->{state} |= RQ_ERROR;
+		    return $bytes;
+		}
 		$rq->{rqclen} = $cl->[0];
 		$DEBUG && $self->xdebug(
 		    "set content-length to $rq->{rqclen} from header");
@@ -633,7 +640,14 @@ sub _in1 {
 	    if ( my $cl = $kv{'content-length'} ) {
 		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
 		    ($obj||$self)->fatal(
-			"multiple different content-length header in request",
+			"multiple different content-length header in response",
+			1,$time);
+		    $self->{error} = 1;
+		    return $bytes;
+		}
+		if ($cl->[0] !~m{^(\d+)$}) {
+		    ($obj||$self)->fatal(
+			"invalid content-length '$cl->[0]' in response",
 			1,$time);
 		    $self->{error} = 1;
 		    return $bytes;

@@ -116,6 +116,19 @@ my @tests = (
 	response_header => "HTTP/1.1 204 no content\r\n\r\n",
 	response_body => '',
     ],
+
+    [ "invalid content-length request", 
+	0 => "POST / HTTP/1.1\r\nContent-length: -10\r\n\r\n",
+	fatal => "invalid content-length '-10' in request|0",
+    ],
+
+    [ "invalid content-length response", 
+	0 => "GET / HTTP/1.1\r\n\r\n",
+	request_header => "GET / HTTP/1.1\r\n\r\n",
+	request_body => '',
+	1 => "HTTP/1.1 200 ok\r\nContent-length: 0xab\r\n\r\n",
+	fatal => "invalid content-length '0xab' in response|1",
+    ],
 );
 
 plan tests => 0+@tests;
