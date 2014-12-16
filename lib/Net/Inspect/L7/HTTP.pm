@@ -67,7 +67,7 @@ my $token_value_cont = qr{
 # squid seems to just strip invalid headers, try the same
 my $xtoken = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f-\xff][^:[:^print:]]*};
 
-my %METHODS_WITHOUT_RQBODY = map { ($_,1) } @{METHODS_WITHOUT_RPBODY()};
+my %METHODS_WITHOUT_RQBODY = map { ($_,1) } @{METHODS_WITHOUT_RQBODY()};
 my %METHODS_WITH_RQBODY    = map { ($_,1) } @{METHODS_WITH_RQBODY()};
 my %METHODS_WITHOUT_RPBODY = map { ($_,1) } @{METHODS_WITHOUT_RPBODY()};
 my %CODE_WITHOUT_RPBODY    = map { ($_,1) } @{CODE_WITHOUT_RPBODY()};
