@@ -245,7 +245,7 @@ sub _in0 {
 	    # bitmask what is done: rpbody|rphdr|rqerror|rqbody|rqhdr
 	    state    => 0,
 	    rqclen   => undef,   # open content-length request
-	    rpclen   => undef,   # open content-length respone
+	    rpclen   => undef,   # open content-length response
 	    # chunked mode for request|response:
 	    #   false - no chunking
 	    #   1,r[qp]clen == 0 - next will be chunk size
