@@ -1,3 +1,7 @@
+0.308 2015/01/06
+- L7::HTTP - fixed typo in METHODS_WITHOUT_RQBODY (use of METHODS_WITHOUT_RPBODY
+  instead of METHODS_WITHOUT_RQBODY)
+- L7::HTTP - check that content-length is valid number
 0.307 2014/12/12
 - L7::HTTP - export some functionality for external use
 0.306 2014/12/11
