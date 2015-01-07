@@ -1,3 +1,7 @@
+0.309 2015/01/07
+- L7::HTTP - connections can now track where gaps are possible (i.e. body data
+  not needed for HTTP analysis itself), see gap_offset, gap_diff.
+- L7::HTTP - bugfix for correctly calculating offset with chunked requests
 0.308 2015/01/06
 - L7::HTTP - fixed typo in METHODS_WITHOUT_RQBODY (use of METHODS_WITHOUT_RPBODY
   instead of METHODS_WITHOUT_RQBODY)

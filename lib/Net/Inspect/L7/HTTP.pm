@@ -18,6 +18,10 @@ use fields (
     'connid',   # connection id
     'lastreqid',# id of last request
     'offset',   # offset in data stream 
+    'gap_upto', # up to which offset we could manage a gap, that is where we
+		# only get body data (no header, chunked info..).
+		# [off,off] similar to offset and off is set to -1 if umlimited
+		# (i.e. body ends with end of file)
 );
 
 use Exporter 'import';
@@ -127,6 +131,7 @@ sub guess_protocol {
 	$obj->{connid} = ++$connid;
 	$obj->{lastreqid} = 0;
 	$obj->{offset} = [0,0];
+	$obj->{gap_upto} = [0,0];
 	return $obj;
     }
 }
@@ -142,8 +147,34 @@ sub in {
 }
 
 sub offset {
-    my ($self,$dir) = @_;
-    return $self->{offset}[$dir];
+    my $self = shift;
+    return @{ $self->{offset} }[@_];
+}
+
+sub gap_diff {
+    my $self = shift;
+    my @rv;
+    for(@_) {
+	my $off = $self->{gap_upto}[$_];
+	push @rv,
+	    $off == -1 ? -1 :
+	    ($off-=$self->{offset}[$_]) > 0 ? $off :
+	    0;
+    }
+    return @rv;
+}
+
+sub gap_offset {
+    my $self = shift;
+    my @rv;
+    for(@_) {
+	my $off = $self->{gap_upto}[$_];
+	push @rv,
+	    $off == -1 ? -1 :
+	    $off > $self->{offset}[$_] ? $off :
+	    0
+    }
+    return @rv;
 }
 
 # give requests a chance to cleanup before destroying connection
@@ -362,6 +393,14 @@ sub _in0 {
 		$bad eq '' ? () : ( junk => $bad ),
 	    });
 
+	    if (!$rq->{rqchunked}) {
+		if (!defined($rq->{rqclen})) {
+		    $self->{gap_upto}[0] = -1; # until eof (CONNECT)
+		} elsif ($rq->{rqclen}) {
+		    $self->{gap_upto}[0] = $self->{offset}[0] + $rq->{rqclen};
+		}
+	    }
+
 	    if ( ! $rq->{rqchunked} and 
 		defined $rq->{rqclen} and $rq->{rqclen} == 0 ) {
 		$DEBUG && $self->xdebug("no content-length - request body done");
@@ -448,6 +487,10 @@ sub _in0 {
 		    my $chdr = substr($data,0,pos($data),'');
 		    $self->{offset}[0] += length($chdr);
 		    $bytes += length($chdr);
+
+		    $self->{gap_upto}[0] = $self->{offset}[0] + $rq->{rqclen}
+			if $rq->{rqclen};
+
 		    $obj->in_chunk_header(0,$chdr,$time) if $obj;
 		    $DEBUG && $self->xdebug(
 			"got chunk header - want $rq->{rqclen} bytes");
@@ -475,7 +518,7 @@ sub _in0 {
 		}xg) {
 		    $DEBUG && $self->xdebug("got chunk trailer");
 		    my $trailer = substr($data,0,pos($data),'');
-		    $self->{offset}[1] += length($trailer);
+		    $self->{offset}[0] += length($trailer);
 		    $bytes += length($trailer);
 		    $obj->in_chunk_trailer(0,$trailer,$time) if $obj;
 		    $rq->{state} |= RQBDY_DONE; # request done
@@ -677,6 +720,14 @@ sub _in1 {
 		$rq->{rpclen} = undef;
 	    }
 
+	    if (!$rq->{rpchunked} && !$self->{upgrade}) {
+		if (!defined($rq->{rpclen})) {
+		    $self->{gap_upto}[1] = -1; # until eof
+		} elsif ($rq->{rpclen}) {
+		    $self->{gap_upto}[1] = $self->{offset}[1] + $rq->{rpclen};
+		}
+	    }
+
 	    $DEBUG && $self->xdebug("got response header");
 	    $obj && $obj->in_response_header($hdr,$time,{
 		content_length => $rq->{rpclen},
@@ -797,6 +848,9 @@ sub _in1 {
 		    my $chdr = substr($data,0,pos($data),'');
 		    $self->{offset}[1] += length($chdr);
 		    $bytes += length($chdr);
+		    $self->{gap_upto}[1] = $self->{offset}[1] + $rq->{rpclen}
+			if $rq->{rpclen};
+
 		    $obj->in_chunk_header(1,$chdr,$time) if $obj;
 		    $DEBUG && $self->xdebug(
 			"got chunk header - want $rq->{rpclen} bytes");
@@ -955,7 +1009,9 @@ Hooks provided:
 
 =item guess_protocol($guess,$dir,$data,$eof,$time,$meta)
 
-=item new_connection($meta) - this returns an object for the connection
+=item new_connection($meta) 
+
+This returns an object for the connection.
 
 =item $connection->in($dir,$data,$eof,$time)
 
@@ -1112,10 +1168,24 @@ Helpful methods
 collects the state of the open connections.
 If defined wantarray it will return a message, otherwise output it via xdebug
 
-=item $connection->offset($dir)
+=item $connection->offset(@dir)
 
-returns the current offset in the data stream, that is the position
+returns the current offset(s) in the data stream, that is the position
 behind the within the in_* methods forwarded data.
+
+=item $connection->gap_offset(@dir)
+
+If the next bytes of the input stream are not needed to interpret the HTTP
+protocol (i.e. plain body data) this gives the offsets up to which data are
+"gapable". If no gaps are possible at the current state C<0> will be returned.
+If everything can be gaps (usually because end of body is caused by end of
+connection) C<-1> will be returned.
+
+=item $connection->gap_diff(@dir)
+
+This is similar to C<gap_offset> but will return the difference from the current
+position, i.e. how large the next gap can be. C<-1> again means an unlimited
+gap.
 
 =item $connection->open_requests(@index)
 

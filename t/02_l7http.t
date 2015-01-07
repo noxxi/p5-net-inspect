@@ -27,6 +27,8 @@ my @tests = (
 	request_body => '',
 	1 => "HTTP/1.0 200 Ok\r\n\r\n",
 	response_header => "HTTP/1.0 200 Ok\r\n\r\n",
+	gap_offset => [ 0,-1 ],
+	gap_diff   => [ 0,-1 ],
 	1 => 'This ends with EOF',
 	response_body => 'This ends with EOF',
 	1 => '',
@@ -41,6 +43,8 @@ my @tests = (
 	1 => "HTTP/1.0 2",
 	1 => "00 Ok\r\n\r\n",
 	response_header => "HTTP/1.0 200 Ok\r\n\r\n",
+	gap_offset => [ 0,-1 ],
+	gap_diff   => [ 0,-1 ],
 	1 => 'This ends with EOF',
 	response_body => 'This ends with EOF',
 	1 => '',
@@ -62,9 +66,17 @@ my @tests = (
 	1 => "HTTP/1.1 200 Ok\r\nTransfer-Encoding: chunked\r\n\r\n",
 	response_header => "HTTP/1.1 200 Ok\r\nTransfer-Encoding: chunked\r\n\r\n",
 	1 => "a\r\n",
+	gap_offset => [ 0,60 ],  # 60 = header(47)+chunkhead(3)+chunklen(10)
+	gap_diff   => [ 0,10 ],  # next 10 bytes are gapable
 	chunk_header => "1|a\r\n",
-	1 => "0123456789\r\n",
-	response_body => "0123456789",
+	1 => "1234567890\r\n",
+	response_body => "1234567890",
+	1 => "8\r\n",
+	gap_offset => [ 0,73 ],  # 73 = last(60)+crlf(2)+chunkhead(3)+chunklen(8)
+	gap_diff   => [ 0,8 ],   # next 8 bytes are gapable
+	chunk_header => "1|8\r\n",
+	1 => "12345678\r\n",
+	response_body => "12345678",
 	1 => "0\r\n\r\n",
 	chunk_header  => "1|0\r\n",
 	response_body => "",
@@ -75,9 +87,17 @@ my @tests = (
 	0 => "POST / HTTP/1.1\r\nTransfer-Encoding: chUNkeD\r\n\r\n",
 	request_header => "POST / HTTP/1.1\r\nTransfer-Encoding: chUNkeD\r\n\r\n",
 	0 => "a\r\n",
+	gap_offset => [ 60,0 ],   # 60 = header(47)+chunkhead(3)+chunklen(10)
+	gap_diff   => [ 10,0 ],   # next 10 bytes
 	chunk_header => "0|a\r\n",
-	0 => "0123456789\r\n",
-	request_body => "0123456789",
+	0 => "1234567890\r\n",
+	request_body => "1234567890",
+	0 => "8\r\n",
+	gap_offset => [ 73,0 ],   # 73 = last(60)+crlf(2)+chunkhead(3)+chunklen(8)
+	gap_diff   => [ 8,0 ],    # next 8 bytes
+	chunk_header => "0|8\r\n",
+	0 => "12345678\r\n",
+	request_body => "12345678",
 	0 => "0\r\n\r\n",
 	chunk_header  => "0|0\r\n",
 	request_body => "",
@@ -129,6 +149,62 @@ my @tests = (
 	1 => "HTTP/1.1 200 ok\r\nContent-length: 0xab\r\n\r\n",
 	fatal => "invalid content-length '0xab' in response|1",
     ],
+
+    [ "content-length followed by chunked request",
+	# ------ request with content-length
+	0 => "POST / HTTP/1.1\r\nContent-length: 15\r\n\r\n",
+	request_header => "POST / HTTP/1.1\r\nContent-length: 15\r\n\r\n",
+	gap_offset => [ 54,0 ], # 54 = header(39)+body(15)
+	gap_diff   => [ 15,0 ], # next 15 bytes
+	0 => "123456789012345",
+	request_body => '123456789012345',
+	# ------ response with content-length
+	1 => "HTTP/1.1 200 ok\r\nContent-length: 13\r\n\r\n",
+	gap_offset => [ 0,52 ], # 52 = header(39)+body(13)
+	gap_diff   => [ 0,13 ], # next 13 bytes
+	response_header => "HTTP/1.1 200 ok\r\nContent-length: 13\r\n\r\n",
+	1 => '1234567890123',
+	response_body => '1234567890123',
+	# ------ chunked request
+	0 => "POST / HTTP/1.1\r\nTransfer-Encoding: chUNkeD\r\n\r\n",
+	request_header => "POST / HTTP/1.1\r\nTransfer-Encoding: chUNkeD\r\n\r\n",
+	0 => "a\r\n",
+	gap_offset => [ 114,0 ],   # 114 = last(54)+header(47)+chunkhead(3)+chunklen(10)
+	gap_diff   => [ 10,0 ],    # next 10 bytes
+	chunk_header => "0|a\r\n",
+	0 => "1234567890\r\n",
+	request_body => "1234567890",
+	0 => "8\r\n",
+	gap_offset => [ 127,0 ],   # 127 = last(114)+crlf(2)+chunkhead(3)+chunklen(8)
+	gap_diff   => [ 8,0 ],     # next 8 bytes
+	chunk_header => "0|8\r\n",
+	0 => "12345678\r\n",
+	request_body => "12345678",
+	0 => "0\r\n\r\n",
+	chunk_header  => "0|0\r\n",
+	request_body => "",
+	chunk_trailer  => "0|\r\n",
+	# ------ chunked response
+	1 => "HTTP/1.1 200 Ok\r\nTransfer-Encoding: chunked\r\n\r\n",
+	response_header => "HTTP/1.1 200 Ok\r\nTransfer-Encoding: chunked\r\n\r\n",
+	1 => "a\r\n",
+	gap_offset => [ 0,112 ],  # 112 = last(52)+header(47)+chunkhead(3)+chunklen(10)
+	gap_diff   => [ 0,10 ],   # next 10 bytes
+	chunk_header => "1|a\r\n",
+	1 => "1234567890\r\n",
+	response_body => "1234567890",
+	1 => "8\r\n",
+	gap_offset => [ 0,125 ],  # 125 = last(112)+crlf(2)+chunkhead(3)+chunklen(8)
+	gap_diff   => [ 0,8 ],    # next 8 bytes
+	chunk_header => "1|8\r\n",
+	1 => "12345678\r\n",
+	response_body => "12345678",
+	1 => "0\r\n\r\n",
+	chunk_header  => "1|0\r\n",
+	response_body => "",
+	chunk_trailer  => "1|\r\n",
+    ],
+
 );
 
 plan tests => 0+@tests;
@@ -149,6 +225,22 @@ for my $t (@tests) {
 		$buf[$what] .= $data;
 		my $processed = $conn->in(0+$what,$buf[$what],$data eq '' ? 1:0,0);
 		substr( $buf[$what],0,$processed,'' );
+	    } elsif ( $what eq "gap_offset") {
+		my @off = $conn->gap_offset(0,1);
+		for(0,1) {
+		    defined($data->[$_]) or next;
+		    $off[$_] == $data->[$_] or
+			die "expected gap_offset[$_]=$data->[$_], got $off[$_]";
+		}
+	    } elsif ( $what eq "gap_diff") {
+		my @diff = $conn->gap_diff(0,1);
+		for(0,1) {
+		    defined($data->[$_]) or next;
+		    $diff[$_] == $data->[$_] or
+			die "expected gap_diff[$_]=$data->[$_], got $diff[$_]";
+		}
+	    } elsif ( $what eq 'sub' ) {
+		$data->($conn);
 	    } elsif ( ! @result ) {
 		die "expected $what, got no results"
 	    } else {
@@ -156,7 +248,7 @@ for my $t (@tests) {
 		die "expected '$what|$data', got '$r'" if "$what|$data" ne $r;
 	    }
 	}
-	die "expected no hooks, got @{$result[0]}" if @result;
+	die "expected no more hooks, got @{$result[0]}" if @result;
 	1;
     }) {
 	pass($desc)
