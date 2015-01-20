@@ -138,7 +138,10 @@ sub guess_protocol {
 
 sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
-    $DEBUG && $self->xdebug("got %d bytes from %d, eof=%d",length($data),$dir,$eof//0);
+    $DEBUG && $self->xdebug("got %s bytes from %d, eof=%d",
+	ref($data) ? join(":",@$data): length($data),
+	$dir,$eof//0
+    );
     my $bytes = $dir == 0
 	? _in0($self,$data,$eof,$time)
 	: _in1($self,$data,$eof,$time);
@@ -148,7 +151,7 @@ sub in {
 
 sub offset {
     my $self = shift;
-    return @{ $self->{offset} }[@_];
+    return @{ $self->{offset} }[wantarray ? @_:$_[0]];
 }
 
 sub gap_diff {
@@ -161,7 +164,7 @@ sub gap_diff {
 	    ($off-=$self->{offset}[$_]) > 0 ? $off :
 	    0;
     }
-    return @rv;
+    return wantarray ? @rv : $rv[0];
 }
 
 sub gap_offset {
@@ -174,7 +177,7 @@ sub gap_offset {
 	    $off > $self->{offset}[$_] ? $off :
 	    0
     }
-    return @rv;
+    return wantarray ? @rv : $rv[0];
 }
 
 # give requests a chance to cleanup before destroying connection
@@ -202,12 +205,18 @@ sub _in0 {
 	croak 'no open request' if ! @$rqs or $rqs->[0]{state} & RQBDY_DONE;
 	croak 'existing error in request' if $rqs->[0]{state} & RQ_ERROR;
 	croak "gap wider than request body" if $rqs->[0]{rqclen} < $len;
-	if ( my $obj = $rqs->[0]{obj} ) {
-	    $obj->in_request_body([ gap => $len ],$eof,$time);
-	}
+
 	$rqs->[0]{rqclen} -= $len;
 	if ( ! $rqs->[0]{rqclen} && ! $rqs->[0]{rqchunked} ) {
 	    $rqs->[0]{state} |= RQBDY_DONE;
+	}
+
+	if ( my $obj = $rqs->[0]{obj} ) {
+	    $obj->in_request_body(
+		[ gap => $len ],
+		$eof || ($rqs->[0]{state} & RQBDY_DONE ? 1:0),
+		$time
+	    );
 	}
 	return $len;
     }
@@ -563,15 +572,18 @@ sub _in1 {
 
 	my $rqs = $self->{requests};
 	croak 'no open response' if ! @$rqs;
-	croak 'existing error in request' if $rqs->[-1]{state} & RQ_ERROR;
-	if ( ! defined $rqs->[-1]{rpclen} ) {
+	my $rq = $rqs->[-1];
+	croak 'existing error in request' if $rq->{state} & RQ_ERROR;
+	if ( ! defined $rq->{rpclen} ) {
 	    croak "not in body-til-eof"  
-		if not $rqs->[-1]{state} & RPBDY_DONE_ON_EOF;
-	} elsif ( $rqs->[-1]{rpclen} < $len ) {
-	    croak "gap ($len) wider than response body (chunk) $rqs->[-1]{rpclen}";
-	} elsif ( my $obj = $rqs->[-1]{obj} ) {
-	    $rqs->[-1]{rpclen} -= $len;
-	    if ( $rqs->[-1]{rpclen} or $rqs->[-1]{rpclen}{rpchunked} ) {
+		if not $rq->{state} & RPBDY_DONE_ON_EOF;
+	} elsif ( $rq->{rpclen} < $len ) {
+	    croak "gap ($len) wider than response body (chunk) $rq->{rpclen}";
+	} else {
+	    $rq->{rpclen} -= $len;
+	}
+	if ( my $obj = $rq->{obj} ) {
+	    if ($rq->{rpclen} or !defined $rq->{rpclen} or $rq->{rpchunked}) {
 		$obj->in_response_body([ gap => $len ],0,$time);
 	    } else {
 		# done with request

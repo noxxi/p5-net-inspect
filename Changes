@@ -1,3 +1,9 @@
+0.310 2015/01/20
+- L7::HTTP 
+  - gap_diff, gap_offset, offset behave now as expected in array
+    and scalar context. 
+  - correctly mark end of body in call of in_request_body
+  - fix for handling gaps in response
 0.309 2015/01/07
 - L7::HTTP - connections can now track where gaps are possible (i.e. body data
   not needed for HTTP analysis itself), see gap_offset, gap_diff.
