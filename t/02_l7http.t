@@ -153,6 +153,20 @@ my @tests = (
 	response_body => '',
     ],
 
+    [ "CONNECT request",
+	0 => "CONNECT foo:12345 HTTP/1.1\r\n\r\n",
+	request_header => "CONNECT foo:12345 HTTP/1.1\r\n\r\n",
+	gap_diff   => [ 0,0 ], # no more bytes allowed for now
+	1 => "HTTP/1.0 200 Connection established\r\n\r\n",
+	response_header => "HTTP/1.0 200 Connection established\r\n\r\n",
+	gap_diff   => [ -1,-1 ], # now anything is allowed
+	0 => "foo",
+	data => [ 0,"foo" ],
+	1 => "bar",
+	data => [ 1,"bar" ],
+	gap_diff   => [ -1,-1 ], # still anything is allowed
+    ],
+
     [ "invalid content-length request", 
 	0 => "POST / HTTP/1.1\r\nContent-length: -10\r\n\r\n",
 	fatal => "invalid content-length '-10' in request|0",
@@ -260,7 +274,8 @@ for my $t (@tests) {
 	    } elsif ( ! @result ) {
 		die "expected $what, got no results"
 	    } else {
-		my $r = join('|',@{shift(@result)});
+		my ($what,$data) = @{shift(@result)};
+		my $r = join('|',$what, ref($data)? @$data:$data );
 		die "expected '$what|$data', got '$r'" if "$what|$data" ne $r;
 	    }
 	}

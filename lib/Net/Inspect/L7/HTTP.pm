@@ -52,14 +52,15 @@ use constant {
     RPBDY_DONE_ON_EOF => 0b10000,
 };
 
-# rfc2616, 3.6
+# rfc2616, 2.2
 #  token          = 1*<any CHAR except CTLs or separators>
 #  separators     = "(" | ")" | "<" | ">" | "@"
 #                 | "," | ";" | ":" | "\" | <">
 #                 | "/" | "[" | "]" | "?" | "="
 #                 | "{" | "}" | SP | HT
 
-my $token = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f-\xff]+};
+my $separator = qr{[()<>@,;:\\"/\[\]?={} \t]};
+my $token = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f]+};
 my $token_value_cont = qr{
     ($token):                      # key:
     [\040\t]*([^\r\n]*?)[\040\t]*  # <space>value<space>
@@ -69,7 +70,7 @@ my $token_value_cont = qr{
 
 # common error: "Last Modified" instead of "Last-Modified"
 # squid seems to just strip invalid headers, try the same
-my $xtoken = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f-\xff][^:[:^print:]]*};
+my $xtoken = qr{[^()<>@,;:\\"/\[\]?={}\x00-\x20\x7f][^:[:^print:]]*};
 
 my %METHODS_WITHOUT_RQBODY = map { ($_,1) } @{METHODS_WITHOUT_RQBODY()};
 my %METHODS_WITH_RQBODY    = map { ($_,1) } @{METHODS_WITH_RQBODY()};
@@ -199,24 +200,30 @@ sub _in0 {
 	my $len = $data->[1];
 
 	croak 'existing error in connection' if $self->{error};
-	croak 'upgraded connections do not support gaps' if $self->{upgrade};
 
 	my $rqs = $self->{requests};
 	croak 'no open request' if ! @$rqs or $rqs->[0]{state} & RQBDY_DONE;
 	croak 'existing error in request' if $rqs->[0]{state} & RQ_ERROR;
-	croak "gap wider than request body" if $rqs->[0]{rqclen} < $len;
+	croak "gap too large" if $self->{gap_upto}[0]>=0
+	    && $self->{gap_upto}[0] < $self->{offset}[0] + $len;
 
-	$rqs->[0]{rqclen} -= $len;
-	if ( ! $rqs->[0]{rqclen} && ! $rqs->[0]{rqchunked} ) {
-	    $rqs->[0]{state} |= RQBDY_DONE;
+	if (defined $rqs->[0]{rqclen}) {
+	    $rqs->[0]{rqclen} -= $len;
+	    if ( ! $rqs->[0]{rqclen} && ! $rqs->[0]{rqchunked} ) {
+		$rqs->[0]{state} |= RQBDY_DONE;
+	    }
 	}
 
 	if ( my $obj = $rqs->[0]{obj} ) {
-	    $obj->in_request_body(
-		[ gap => $len ],
-		$eof || ($rqs->[0]{state} & RQBDY_DONE ? 1:0),
-		$time
-	    );
+	    if ($self->{upgrade}) {
+		$obj->in_data(0,[ gap => $len ],$eof,$time);
+	    } else {
+		$obj->in_request_body(
+		    [ gap => $len ],
+		    $eof || ($rqs->[0]{state} & RQBDY_DONE ? 1:0),
+		    $time
+		);
+	    }
 	}
 	return $len;
     }
@@ -360,7 +367,9 @@ sub _in0 {
 	    }
 
 	    if ( $version >= 1.1 and 
-		grep { lc($_) eq 'chunked' } @{ $kv{'transfer-encoding'} || [] } ) {
+		grep { m{(?:^|[ \t,])chunked(?:$|[ \t,;])}i }
+		    @{ $kv{'transfer-encoding'} || [] }
+	    ) {
 		$rq->{rqchunked} = 1;
 		if ( defined $rq->{rqclen} ) {
 		    # RFC2616 4.4.3: if both given ignore content-length
@@ -377,7 +386,10 @@ sub _in0 {
 		    $rq->{state} |= RQ_ERROR;
 		    return $bytes;
 		}
-		$rq->{rqclen} = ( $rq->{method} eq 'CONNECT' ) ? undef : 0;
+		# With CONNECT no data are allowed before we got the successful
+		# response. Only then rqclen will be set to undef to mark that
+		# body ends with eof.
+		$rq->{rqclen} = 0;
 		$rq->{rqchunked} = undef;
 	    } elsif ( $METHODS_WITH_RQBODY{ $rq->{method} } ) {
 		if ( ! defined $rq->{rqclen} && ! $rq->{rqchunked} ) {
@@ -410,8 +422,9 @@ sub _in0 {
 		}
 	    }
 
-	    if ( ! $rq->{rqchunked} and 
-		defined $rq->{rqclen} and $rq->{rqclen} == 0 ) {
+	    if ( ! $rq->{rqchunked}
+		and $rq->{rqclen} == 0
+		and $rq->{method} ne 'CONNECT') {
 		$DEBUG && $self->xdebug("no content-length - request body done");
 		# no clen - body done
 		$rq->{state} |= RQBDY_DONE;
@@ -568,23 +581,23 @@ sub _in1 {
 	my $len = $data->[1];
 
 	croak 'existing error in connection' if $self->{error};
-	croak 'upgraded connections do not support gaps' if $self->{upgrade};
 
 	my $rqs = $self->{requests};
 	croak 'no open response' if ! @$rqs;
 	my $rq = $rqs->[-1];
 	croak 'existing error in request' if $rq->{state} & RQ_ERROR;
-	if ( ! defined $rq->{rpclen} ) {
-	    croak "not in body-til-eof"  
-		if not $rq->{state} & RPBDY_DONE_ON_EOF;
-	} elsif ( $rq->{rpclen} < $len ) {
-	    croak "gap ($len) wider than response body (chunk) $rq->{rpclen}";
-	} else {
-	    $rq->{rpclen} -= $len;
-	}
+	croak "gap too large" if $self->{gap_upto}[1]>=0
+	    && $self->{gap_upto}[1] < $self->{offset}[1] + $len;
+
+	$rq->{rpclen} -= $len if defined $rq->{rpclen};
+
 	if ( my $obj = $rq->{obj} ) {
-	    if ($rq->{rpclen} or !defined $rq->{rpclen} or $rq->{rpchunked}) {
-		$obj->in_response_body([ gap => $len ],0,$time);
+	    if ($self->{upgrade}) {
+		$obj->in_data(1,[ gap => $len ],$eof,$time);
+	    } elsif ($rq->{rpclen}
+		or !defined $rq->{rpclen}
+		or $rq->{rpchunked}) {
+		$obj->in_response_body([ gap => $len ],$eof,$time);
 	    } else {
 		# done with request
 		pop(@$rqs);
@@ -600,6 +613,7 @@ sub _in1 {
     return $bytes if $self->{error};
 
     if ($self->{upgrade}) {
+	return $bytes if $data eq '' && !$eof;
 	$self->{offset}[1] += length($data);
 	if ( my $obj = $rqs->[0]{obj} ) {
 	    $obj->in_data(1,$data,$eof,$time);
@@ -692,7 +706,28 @@ sub _in1 {
 
 	    $rq->{state} |= RPHDR_DONE; # response header done
 
-	    if ( my $cl = $kv{'content-length'} ) {
+
+	    if ( $rq->{method} eq 'CONNECT' and $code =~m{^2} ) {
+		$self->{upgrade} = 1;
+		# Since CONNECT was successful we can now allow unlimited
+		# request and response body data.
+		$rq->{rqclen} = $rq->{rpclen} = undef;
+		@{$self->{gap_upto}} = (-1,-1);
+
+	    } elsif ( $METHODS_WITHOUT_RPBODY{ $rq->{method} }
+		or $CODE_WITHOUT_RPBODY{$code} ) {
+		# no content, even if specified
+		$rq->{rpclen} = 0;
+
+	    } elsif ( $version >= 1.1 and
+		grep { m{(?:^|[ \t,])chunked(?:$|[ \t,;])}i }
+		    @{ $kv{'transfer-encoding'} || [] }
+	    ) {
+		# RFC2616 4.4.3:
+		# chunked takes preference if content-length is given too.
+		$rq->{rpchunked} = 1;
+
+	    } elsif ( my $cl = $kv{'content-length'} ) {
 		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
 		    ($obj||$self)->fatal(
 			"multiple different content-length header in response",
@@ -708,36 +743,11 @@ sub _in1 {
 		    return $bytes;
 		}
 		$rq->{rpclen} = $cl->[0];
-	    }
+		$self->{gap_upto}[1] = $self->{offset}[1] + $rq->{rpclen};
 
-	    if ( $version >= 1.1 and 
-		grep { lc($_) eq 'chunked' } @{ $kv{'transfer-encoding'} || [] } ) {
-		$rq->{rpchunked} = 1;
-	    }
-
-	    if ( $rq->{method} eq 'CONNECT' and $code =~m{^2} ) {
-		$self->{upgrade} = 1;
-		$rq->{rpclen} = $rq->{rpchunked} = undef;
-	    } elsif ( $METHODS_WITHOUT_RPBODY{ $rq->{method} }
-		or $CODE_WITHOUT_RPBODY{$code} ) {
-		# no content, even if specified
-		$rq->{rpclen} = 0;
-		$rq->{rpchunked} = undef;
-	    }
-
-	    if ( $rq->{rpchunked} and defined $rq->{rpclen} ) {
-		# RFC2616 4.4.3: if both given ignore content-length
-		%TRACE && ($obj||$self)->xtrace(
-		    "response content-length and chunked given");
-		$rq->{rpclen} = undef;
-	    }
-
-	    if (!$rq->{rpchunked} && !$self->{upgrade}) {
-		if (!defined($rq->{rpclen})) {
-		    $self->{gap_upto}[1] = -1; # until eof
-		} elsif ($rq->{rpclen}) {
-		    $self->{gap_upto}[1] = $self->{offset}[1] + $rq->{rpclen};
-		}
+	    } else {
+		# no length given but method supports body -> end with eof
+		$self->{gap_upto}[1] = -1;
 	    }
 
 	    $DEBUG && $self->xdebug("got response header");
@@ -923,8 +933,8 @@ sub parse_hdrfields {
 	} else {
 	    # with continuation line
             my ($k,$v) = ($1,$2.$3);
-            # <space>value-part<space> -> ' ' + value-part
-            $v =~s{[\r\n]+[ \t](.*?)[ \t]*}{ $1}g;
+	    # <space>value-part<space> -> ' ' + value-part
+	    $v =~s{[\r\n]+[ \t](.*?)[ \t]*}{ $1}g;
             push @{$fields->{ lc($k) }},$v;
 	}
     }

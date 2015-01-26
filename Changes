@@ -1,3 +1,12 @@
+0.311 2015/01/26
+- L7::HTTP
+  - allow \x80-\xff in field-name
+  - allow gaps for upgraded connections (i.e. calls for in_data)
+  - better detection of chunked encoding, that is accept if given together with
+    parameters or with further transfer-encodings inside the same field-value
+  - expect body data (especially gaps) only with CONNECT once a successful
+    response was received.
+  - some code refactoring
 0.310 2015/01/20
 - L7::HTTP 
   - gap_diff, gap_offset, offset behave now as expected in array
