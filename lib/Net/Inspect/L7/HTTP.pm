@@ -442,6 +442,7 @@ sub _in0 {
 	    return $bytes;
 	} elsif ( $eof ) {
 	    ($obj||$self)->fatal('eof in request header',0,$time);
+	    $rq->{state} |= RQ_ERROR;
 	    return $bytes;
 	} else {
 	    # will be called on new data from upper flow
@@ -782,9 +783,11 @@ sub _in1 {
 	} elsif ( length($data) > 2**16 ) {
 	    ($obj||$self)->fatal('response header too big',1,$time);
 	    $self->{error} = 1;
-	    reurn $bytes;
+	    return $bytes;
 	} elsif ( $eof ) {
 	    ($obj||$self)->fatal('eof in response header',1,$time);
+	    $self->{error} = 1;
+	    return $bytes;
 	} else {
 	    # will be called on new data from upper flow
 	    $DEBUG && $self->xdebug("need more data for response header");

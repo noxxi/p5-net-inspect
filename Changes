@@ -1,3 +1,5 @@
+0.312 2015/01/28
+- L7::HTTP fixed handling of some broken input
 0.311 2015/01/26
 - L7::HTTP
   - allow \x80-\xff in field-name
