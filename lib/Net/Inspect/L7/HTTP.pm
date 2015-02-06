@@ -214,6 +214,7 @@ sub _in0 {
 	    }
 	}
 
+	$self->{offset}[0] += $len;
 	if ( my $obj = $rqs->[0]{obj} ) {
 	    if ($self->{upgrade}) {
 		$obj->in_data(0,[ gap => $len ],$eof,$time);
@@ -591,6 +592,7 @@ sub _in1 {
 	    && $self->{gap_upto}[1] < $self->{offset}[1] + $len;
 
 	$rq->{rpclen} -= $len if defined $rq->{rpclen};
+	$self->{offset}[1] += $len;
 
 	if ( my $obj = $rq->{obj} ) {
 	    if ($self->{upgrade}) {
@@ -943,7 +945,7 @@ sub parse_hdrfields {
     }
     if (pos($hdr)//0 != length($hdr)) {
         # bad line inside
-        substr($hdr,0,pos($hdr),'');
+	substr($hdr,0,pos($hdr)//0,'');
         $bad .= $1 if $hdr =~s{\A([^\n]*)\n}{};
         goto parse;
     }

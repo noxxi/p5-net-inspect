@@ -235,6 +235,39 @@ my @tests = (
 	chunk_trailer  => "1|\r\n",
     ],
 
+    [ "multiple POSTs after each other with gaps",
+	0 => "POST / HTTP/1.0\r\nContent-length: 10\r\n\r\n",
+	request_header => "POST / HTTP/1.0\r\nContent-length: 10\r\n\r\n",
+	gap_offset => [ 49,0 ],
+	gap_diff   => [ 10,0 ],
+	0 => [ gap => 10 ],
+	request_body => "gap|10",
+	1 => "HTTP/1.0 200 Ok\r\nContent-length: 5\r\n\r\n",
+	response_header => "HTTP/1.0 200 Ok\r\nContent-length: 5\r\n\r\n",
+	gap_diff   => [ 0,5 ],
+	gap_offset => [ 0,43 ],
+	1 => [ gap => 5 ],
+	response_body => "gap|5",
+
+	0 => "POST / HTTP/1.0\r\nContent-length: 8\r\n\r\n",
+	request_header => "POST / HTTP/1.0\r\nContent-length: 8\r\n\r\n",
+	gap_offset => [ 95,0 ],
+	gap_diff   => [ 8,0 ],
+	0 => "1234",
+	request_body => '1234',
+	0 => [ gap => 4 ],
+	request_body => "gap|4",
+	1 => "HTTP/1.0 200 Ok\r\nContent-length: 4\r\n\r\n43",
+	response_header => "HTTP/1.0 200 Ok\r\nContent-length: 4\r\n\r\n",
+	response_body => '43',
+	gap_offset => [ 0,85 ],
+	gap_diff   => [ 0,2 ],
+	1 => [ gap => 2 ],
+	response_body => "gap|2",
+
+	gap_diff   => [ 0,0 ],
+    ],
+
 );
 
 plan tests => 0+@tests;
@@ -252,9 +285,14 @@ for my $t (@tests) {
 	    if ( $what eq '0' or $what eq '1' ) {
 		die "expected no hooks, got @{$result[0]}" if @result;
 		# put into $conn
-		$buf[$what] .= $data;
-		my $processed = $conn->in(0+$what,$buf[$what],$data eq '' ? 1:0,0);
-		substr( $buf[$what],0,$processed,'' );
+		if (ref($data)) {
+		    die "unhandled data in buf before gap" if $buf[$what] ne '';
+		    $conn->in(0+$what,$data,$data->[1]==0,0);
+		} else {
+		    $buf[$what] .= $data;
+		    my $n = $conn->in(0+$what,$buf[$what],$data eq '' ? 1:0,0);
+		    substr( $buf[$what],0,$n,'' );
+		}
 	    } elsif ( $what eq "gap_offset") {
 		my @off = $conn->gap_offset(0,1);
 		for(0,1) {
@@ -274,9 +312,12 @@ for my $t (@tests) {
 	    } elsif ( ! @result ) {
 		die "expected $what, got no results"
 	    } else {
-		my ($what,$data) = @{shift(@result)};
-		my $r = join('|',$what, ref($data)? @$data:$data );
-		die "expected '$what|$data', got '$r'" if "$what|$data" ne $r;
+		my $have = do {
+		    my ($what,$data,@rest) = @{shift(@result)};
+		    join('|',$what, ref($data)? @$data:$data,@rest );
+		};
+		my $want = join('|',$what, ref($data)? @$data:$data);
+		die "expected '$want', got '$have'" if $want ne $have;
 	    }
 	}
 	die "expected no more hooks, got @{$result[0]}" if @result;
@@ -286,6 +327,7 @@ for my $t (@tests) {
     } else {
 	diag($@);
 	fail($desc);
+	last;
     }
 }
 

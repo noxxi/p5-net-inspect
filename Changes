@@ -1,3 +1,5 @@
+0.313 2015/02/06
+- L7::HTTP fixed offset calculation in case of gaps
 0.312 2015/01/28
 - L7::HTTP fixed handling of some broken input
 0.311 2015/01/26
