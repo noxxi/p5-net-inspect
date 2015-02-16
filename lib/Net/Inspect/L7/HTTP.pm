@@ -22,6 +22,8 @@ use fields (
 		# only get body data (no header, chunked info..).
 		# [off,off] similar to offset and off is set to -1 if umlimited
 		# (i.e. body ends with end of file)
+    'hdr_maxsz',# maximum header size for request(0), response(1) and
+                # chunk header(2). Defaults to 64k, 16k and 2k.
 );
 
 use Exporter 'import';
@@ -104,7 +106,7 @@ sub guess_protocol {
 	    return ($obj,$n);
 
 	} elsif ( $buf =~m{[^\n]\r?\n\r?\n}
-	    or length($buf)>2**16 ) {
+	    or length($buf)>$self->{hdr_maxsz}[0] ) {
 	    # does not look like a HTTP header for me
 	    debug("does not look like HTTP header: $buf");
 	    $guess->detach($self);
@@ -125,7 +127,7 @@ sub guess_protocol {
 {
     my $connid = 0;
     sub new_connection {
-	my ($self,$meta) = @_;
+	my ($self,$meta,%args) = @_;
 	my $obj = $self->new;
 	$obj->{meta} = $meta;
 	$obj->{requests} = [];
@@ -133,6 +135,11 @@ sub guess_protocol {
 	$obj->{lastreqid} = 0;
 	$obj->{offset} = [0,0];
 	$obj->{gap_upto} = [0,0];
+	$obj->{hdr_maxsz} = delete $args{header_maxsize};
+	$obj->{hdr_maxsz}[0] ||= 2**16;
+	$obj->{hdr_maxsz}[1] ||= 2**14;
+	$obj->{hdr_maxsz}[2] ||= 2**11;
+
 	return $obj;
     }
 }
@@ -437,7 +444,7 @@ sub _in0 {
 		substr($data,0,pos($data))),0,$time);
 	    $rq->{state} |= RQ_ERROR;
 	    return $bytes;
-	} elsif ( length($data) > 2**16 ) {
+	} elsif ( length($data) > $self->{hdr_maxsz}[0] ) {
 	    ($obj||$self)->fatal('request header too big',0,$time);
 	    $rq->{state} |= RQ_ERROR;
 	    return $bytes;
@@ -546,7 +553,8 @@ sub _in0 {
 		    $bytes += length($trailer);
 		    $obj->in_chunk_trailer(0,$trailer,$time) if $obj;
 		    $rq->{state} |= RQBDY_DONE; # request done
-		} elsif ( $data =~m{\n\r?\n} or length($data)>2**16 ) {
+		} elsif ( $data =~m{\n\r?\n} 
+		    or length($data) > $self->{hdr_maxsz}[2] ) {
 		    ($obj||$self)->fatal("invalid chunk trailer",0,$time);
 		    $self->{error} = 1;
 		    return $bytes;
@@ -782,7 +790,7 @@ sub _in1 {
 		substr($data,0,pos($data))),1,$time);
 	    $self->{error} = 1;
 	    return $bytes;
-	} elsif ( length($data) > 2**16 ) {
+	} elsif ( length($data) > $self->{hdr_maxsz}[1] ) {
 	    ($obj||$self)->fatal('response header too big',1,$time);
 	    $self->{error} = 1;
 	    return $bytes;
@@ -909,7 +917,8 @@ sub _in1 {
 		    $bytes += length($trailer);
 		    $obj->in_chunk_trailer(1,$trailer,$time) if $obj;
 		    pop(@$rqs); # request done
-		} elsif ( $data =~m{\n\r?\n} or length($data)>2**16 ) {
+		} elsif ( $data =~m{\n\r?\n} or 
+		    length($data)>$self->{hdr_maxsz}[2] ) {
 		    ($obj||$self)->fatal("invalid chunk trailer",1,$time);
 		    $self->{error} = 1;
 		    return $bytes;
@@ -1036,9 +1045,15 @@ Hooks provided:
 
 =item guess_protocol($guess,$dir,$data,$eof,$time,$meta)
 
-=item new_connection($meta) 
+=item new_connection($meta,%args) 
 
 This returns an object for the connection.
+With C<$args{header_maxsize}> the maximum size of the message headers can be
+given, that is:
+
+  $args{header_maxsize}[0] - request header, default 64k
+  $args{header_maxsize}[1] - response header, default 16k
+  $args{header_maxsize}[2] - chunked header, default 2k
 
 =item $connection->in($dir,$data,$eof,$time)
 

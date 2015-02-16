@@ -1,3 +1,6 @@
+0.314 2015/02/16
+- L7::HTTP option header_maxsize for new_connection allows it to configure the
+  maximum size of the message headers.
 0.313 2015/02/06
 - L7::HTTP fixed offset calculation in case of gaps
 0.312 2015/01/28
