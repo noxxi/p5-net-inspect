@@ -18,7 +18,7 @@ sub import {
 
     # extract var => \$var from import and alias it to DEBUG
     # extract sub => \$code and set $DEBUG_SUB
-    for(my $i=1;$i<@_-1;$i++) {
+    for(my $i=1;$i<@_;$i++) {
         if ( $_[$i] eq 'var' ) {
             *DEBUG = $_[$i+1];
             splice(@_,$i,2);
@@ -31,6 +31,10 @@ sub import {
             $OUTPUT_SUB = $_[$i+1];
             splice(@_,$i,2);
             $i-=2;
+	} elsif ( $_[$i] =~m{^(?:debug)?(\d+)$} ) {
+	    $DEBUG = $1;
+	    splice(@_,$i,1);
+	    $i--;
         }
     }
 
@@ -174,8 +178,8 @@ Can be explicitly imported, but is not exported by default.
 
 =back
 
-To integrate the debugging of L<Net::Inspect> with other debugging frameworks one
-has to call one of
+To integrate the debugging of L<Net::Inspect> with other debugging frameworks
+one has to call one of
 
   Net::Inspect::Debug var => \$myDEBUG, sub => \&my_debug;
   Net::Inspect::Debug var => \$myDEBUG, output => \&my_output;
@@ -202,4 +206,8 @@ the internal (x)debug and (x)trace functions.
 
 =back
 
-1;
+To ease debugging one could give a number C<D> of C<debugD> as debug level
+directly when importing the module, e.g.
+
+   perl -MNet::Inspect::Debug=10 ...
+   use Net::Inspect::Debug 'debug10';

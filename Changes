@@ -1,3 +1,5 @@
+0.315 2015/02/18
+- L7::HTTP support for Websockets
 0.314 2015/02/16
 - L7::HTTP option header_maxsize for new_connection allows it to configure the
   maximum size of the message headers.

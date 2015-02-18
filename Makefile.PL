@@ -8,6 +8,7 @@ WriteMakefile(
 	'Scalar::Util' => 0,
 	'HTTP::Request' => 0,
 	'HTTP::Response' => 0,
+	'Digest::SHA' => 0,
     },
     LICENSE => 'perl',
     META_MERGE => {

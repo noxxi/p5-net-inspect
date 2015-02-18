@@ -8,7 +8,9 @@ package Net::Inspect::L7::HTTP;
 use base 'Net::Inspect::Flow';
 use Net::Inspect::Debug qw(:DEFAULT $DEBUG %TRACE);
 use Hash::Util 'lock_keys';
+use Digest::SHA 'sha1_base64';
 use Carp 'croak';
+use Scalar::Util 'weaken';
 use fields (
     'replay',   # collected and replayed in guess_protocol
     'meta',     # meta data from connection
@@ -126,6 +128,7 @@ sub guess_protocol {
 
 {
     my $connid = 0;
+    sub syn { 1 }; # in case it is attached to Net::Inspect::Tcp
     sub new_connection {
 	my ($self,$meta,%args) = @_;
 	my $obj = $self->new;
@@ -209,7 +212,8 @@ sub _in0 {
 	croak 'existing error in connection' if $self->{error};
 
 	my $rqs = $self->{requests};
-	croak 'no open request' if ! @$rqs or $rqs->[0]{state} & RQBDY_DONE;
+	croak 'no open request' if ! @$rqs or
+	    $rqs->[0]{state} & RQBDY_DONE && ! $self->{upgrade};
 	croak 'existing error in request' if $rqs->[0]{state} & RQ_ERROR;
 	croak "gap too large" if $self->{gap_upto}[0]>=0
 	    && $self->{gap_upto}[0] < $self->{offset}[0] + $len;
@@ -222,16 +226,15 @@ sub _in0 {
 	}
 
 	$self->{offset}[0] += $len;
-	if ( my $obj = $rqs->[0]{obj} ) {
-	    if ($self->{upgrade}) {
-		$obj->in_data(0,[ gap => $len ],$eof,$time);
-	    } else {
-		$obj->in_request_body(
-		    [ gap => $len ],
-		    $eof || ($rqs->[0]{state} & RQBDY_DONE ? 1:0),
-		    $time
-		);
-	    }
+	my $obj = $rqs->[0]{obj};
+	if ($self->{upgrade}) {
+	    $self->{upgrade}[0]([ gap => $len ],$eof,$time);
+	} elsif ($obj) {
+	    $obj->in_request_body(
+		[ gap => $len ],
+		$eof || ($rqs->[0]{state} & RQBDY_DONE ? 1:0),
+		$time
+	    );
 	}
 	return $len;
     }
@@ -245,9 +248,7 @@ sub _in0 {
 
     if ($self->{upgrade}) {
 	$self->{offset}[0] += length($data);
-	if ( my $obj = $rqs->[0]{obj} ) {
-	    $obj->in_data(0,$data,$eof,$time);
-	}
+	$self->{upgrade}[0]($data,$eof,$time);
 	return $bytes + length($data);
     }
 
@@ -310,6 +311,8 @@ sub _in0 {
 	    rqchunked => undef,  # chunked mode for request
 	    rpchunked => undef,  # chunked mode for response
 	    method   => undef,   # request method
+	    upgrade  => undef,   # { websocket => sec-websocket-key }
+	    expect   => undef,   # hash with expectations like "100-continue"
 	    info     => '',      # debug info
 	);
 	lock_keys(%rq);
@@ -354,6 +357,21 @@ sub _in0 {
 	    $bytes += $n;
 	    $rq->{state} |= RQHDR_DONE; # rqhdr done
 
+	    my %cbargs = (
+		content_length => undef,
+		method => $rq->{method},
+		url => $url,
+		version => $version,
+		fields => \%kv,
+		$bad eq '' ? () : ( junk => $bad ),
+	    );
+	    if ($version>=1.1 and $kv{expect}) {
+		for(@{$kv{expect}}) {
+		    # ignore all but 100-continue
+		    $rq->{expect}{lc($1)} = 1 if m{\b(100-continue)\b}i
+		}
+	    }
+
 	    if ( my $cl = $kv{'content-length'} ) {
 		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
 		    ($obj||$self)->fatal(
@@ -369,7 +387,7 @@ sub _in0 {
 		    $rq->{state} |= RQ_ERROR;
 		    return $bytes;
 		}
-		$rq->{rqclen} = $cl->[0];
+		$cbargs{content_length} = $rq->{rqclen} = $cl->[0];
 		$DEBUG && $self->xdebug(
 		    "set content-length to $rq->{rqclen} from header");
 	    }
@@ -378,7 +396,7 @@ sub _in0 {
 		grep { m{(?:^|[ \t,])chunked(?:$|[ \t,;])}i }
 		    @{ $kv{'transfer-encoding'} || [] }
 	    ) {
-		$rq->{rqchunked} = 1;
+		$cbargs{chunked} = $rq->{rqchunked} = 1;
 		if ( defined $rq->{rqclen} ) {
 		    # RFC2616 4.4.3: if both given ignore content-length
 		    %TRACE && ($obj||$self)->xtrace(
@@ -397,8 +415,9 @@ sub _in0 {
 		# With CONNECT no data are allowed before we got the successful
 		# response. Only then rqclen will be set to undef to mark that
 		# body ends with eof.
-		$rq->{rqclen} = 0;
+		$cbargs{content_length} = $rq->{rqclen} = 0;
 		$rq->{rqchunked} = undef;
+
 	    } elsif ( $METHODS_WITH_RQBODY{ $rq->{method} } ) {
 		if ( ! defined $rq->{rqclen} && ! $rq->{rqchunked} ) {
 		    ($obj||$self)->fatal(
@@ -409,18 +428,40 @@ sub _in0 {
 		}
 	    } elsif ( ! $rq->{rqchunked} ) {
 		# if not given content-length is considered 0
-		$rq->{rqclen} ||= 0;
+		$cbargs{content_length} = $rq->{rqclen} ||= 0;
 	    }
 
-	    $obj && $obj->in_request_header($hdr,$time, { 
-		content_length => $rq->{rqclen},
-		$rq->{rqchunked} ? ( chunked => 1 ):(),
-		method => $rq->{method},
-		url => $url,
-		version => $version,
-		fields => \%kv,
-		$bad eq '' ? () : ( junk => $bad ),
-	    });
+	    # Connection upgrade - currently only Websocket is supported
+	    if ($version >= 1.1 and $kv{upgrade}
+		and grep m{\bWebSocket\b}i,@{$kv{upgrade}}) {
+		# Websocket: RFC6455, Sec.4.1 Page 16ff
+		my $wskey = $kv{'sec-websocket-key'} || [];
+		if (@$wskey > 1) {
+		    my %x;
+		    $wskey = [ map { $x{$_}++ ? ():($_) } @$wskey ];
+		}
+		my $v;
+		if ( @$wskey == 1
+		    and $rq->{method} eq 'GET'
+		    # RFC6455 requires Connection upgrade on client site,
+		    # while for RFC7230 it should be enough on server side.
+		    and $v = $kv{connection} and grep m{\bUPGRADE\b}i, @$v
+		    and $v = $kv{upgrade} and grep m{\bWebSocket\b}i, @$v
+		    and $v = $kv{'sec-websocket-version'}
+		    and ! grep { $_ ne '13' } @$v
+		) {
+		    $cbargs{upgrade} = $rq->{upgrade} = {
+			websocket => $wskey->[0]
+		    };
+		} else {
+		    ($obj||$self)->fatal(
+			"invalid websocket uprade request",0,$time);
+		    $rq->{state} |= RQ_ERROR;
+		    return $bytes;
+		}
+	    }
+
+	    $obj && $obj->in_request_header($hdr,$time,\%cbargs);
 
 	    if (!$rq->{rqchunked}) {
 		if (!defined($rq->{rqclen})) {
@@ -602,18 +643,17 @@ sub _in1 {
 	$rq->{rpclen} -= $len if defined $rq->{rpclen};
 	$self->{offset}[1] += $len;
 
-	if ( my $obj = $rq->{obj} ) {
-	    if ($self->{upgrade}) {
-		$obj->in_data(1,[ gap => $len ],$eof,$time);
-	    } elsif ($rq->{rpclen}
-		or !defined $rq->{rpclen}
-		or $rq->{rpchunked}) {
-		$obj->in_response_body([ gap => $len ],$eof,$time);
-	    } else {
-		# done with request
-		pop(@$rqs);
-		$obj->in_response_body([ gap => $len ],1,$time);
-	    }
+	my $obj = $rq->{obj};
+	if ($self->{upgrade}) {
+	    $self->{upgrade}[1]([ gap => $len ],$eof,$time);
+	} elsif ($rq->{rpclen}
+	    or !defined $rq->{rpclen}
+	    or $rq->{rpchunked}) {
+	    $obj && $obj->in_response_body([ gap => $len ],$eof,$time);
+	} else {
+	    # done with request
+	    pop(@$rqs);
+	    $obj && $obj->in_response_body([ gap => $len ],1,$time);
 	}
 	return $len;
     }
@@ -622,19 +662,16 @@ sub _in1 {
     READ_DATA:
 
     return $bytes if $self->{error};
+    return $bytes if $data eq '' && !$eof;
 
     if ($self->{upgrade}) {
-	return $bytes if $data eq '' && !$eof;
 	$self->{offset}[1] += length($data);
-	if ( my $obj = $rqs->[0]{obj} ) {
-	    $obj->in_data(1,$data,$eof,$time);
-	}
+	$self->{upgrade}[1]($data,$eof,$time);
 	return $bytes + length($data);
     }
 
     if ( $data eq '' ) {
 	$DEBUG && $self->xdebug("no more data, eof=$eof bytes=$bytes");
-	return $bytes if ! $eof; # need more data
 
 	# handle EOF
 	# check if we got response body for last request
@@ -699,46 +736,110 @@ sub _in1 {
 	    $bytes += $n;
 	    $self->{offset}[1] += $n;
 
-	    if ( $code >= 100 and $code <= 199 ) {
-		# preliminary response, we are not done!
+	    my %cbargs = (
+		content_length => undef,
+		version => $version,
+		code => $code,
+		reason => $reason,
+		fields => \%kv,
+		$bad eq '' ? () : ( junk => $bad ),
+	    );
+
+
+	    if ($code == 100 and $rq->{expect}{'100-continue'}
+		or $code == 102) {
 		$DEBUG && $self->xdebug("got preliminary response");
-		$obj && $obj->in_response_header($hdr,$time,{
-		    content_length => 0,
-		    version => $version,
-		    code => $code,
-		    reason => $reason,
-		    fields => \%kv,
-		    $bad eq '' ? () : ( junk => $bad ),
-		});
 
 		# preliminary responses do not contain any body
+		$cbargs{content_length} = 0;
+		$obj && $obj->in_response_header($hdr,$time,\%cbargs);
 		goto READ_DATA;
+
+	    } elsif ($code != 101 and $code <= 199) {
+		$self->{error} = 1;
+		($obj||$self)->fatal("unexpected status code $code",1,$time);
+		return $bytes;
 	    }
 
 	    $rq->{state} |= RPHDR_DONE; # response header done
 
+	    # Switching Protocols
+	    # Any upgrade must have both a "Connection: upgrade" and a
+	    # "Upgrade: newprotocol" header.
+	    if ($code == 101) {
+		my %proto;
+		if ($rq->{upgrade}
+		    and grep { m{\bUPGRADE\b}i } @{$kv{connection} || []}) {
+		    for(@{$kv{upgrade} || []}) {
+			$proto{lc($_)} = 1 for split(m{\s*[,;]\s*});
+		    }
+		}
+
+		# Currently only Websocket is supported.
+		if (keys(%proto) == 1
+		    and $proto{websocket}
+		    and my $wsk = $rq->{upgrade}{websocket}
+		    and my $wsa = $kv{'sec-websocket-accept'}) {
+		    if ($wsa && @$wsa != 1) {
+			my %x;
+			$wsa = [ map { $x{$_}++ ? ():($_) } @$wsa ];
+		    }
+		    # beware its magic! see RFC6455 page 7
+		    # sha1_base64 does no padding, so we need to add a single
+		    # '=' (pad to 4*7 byte) at the end for comparison
+		    if ( @$wsa != 1 or $wsa->[0] ne sha1_base64(
+			$wsk.'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').'=') {
+			$self->{error} = 1;
+			($obj||$self)->fatal(
+			    "invalid websocket upgrade response",1,$time);
+			return $bytes;
+		    }
+
+		    $cbargs{upgrade} = 'websocket';
+		    $self->{upgrade} = upgrade_websocket($self,$obj);
+		    $rq->{rqclen} = $rq->{rpclen} = undef;
+		    goto RESPONSE_HEADER_DONE;
+
+		} else {
+		    $self->{error} = 1;
+		    ($obj||$self)->fatal(
+			"invalid or unsupported connection upgrade",1,$time);
+		    return $bytes;
+		}
+	    }
+
+	    # Forget any $rq->{upgrade} we did not get 101 response.
+	    # This might be due to authorization required etc.
+	    $rq->{upgrade} = undef;
+
 
 	    if ( $rq->{method} eq 'CONNECT' and $code =~m{^2} ) {
-		$self->{upgrade} = 1;
+		$cbargs{upgrade} = 'CONNECT';
+		$self->{upgrade} = upgrade_CONNECT($self,$obj),
 		# Since CONNECT was successful we can now allow unlimited
 		# request and response body data.
 		$rq->{rqclen} = $rq->{rpclen} = undef;
-		@{$self->{gap_upto}} = (-1,-1);
+		goto RESPONSE_HEADER_DONE;
+	    }
 
-	    } elsif ( $METHODS_WITHOUT_RPBODY{ $rq->{method} }
+	    if ( $METHODS_WITHOUT_RPBODY{ $rq->{method} }
 		or $CODE_WITHOUT_RPBODY{$code} ) {
 		# no content, even if specified
-		$rq->{rpclen} = 0;
+		$cbargs{content_length} = $rq->{rpclen} = 0;
+		goto RESPONSE_HEADER_DONE;
+	    }
 
-	    } elsif ( $version >= 1.1 and
+	    if ( $version >= 1.1 and
 		grep { m{(?:^|[ \t,])chunked(?:$|[ \t,;])}i }
 		    @{ $kv{'transfer-encoding'} || [] }
 	    ) {
 		# RFC2616 4.4.3:
 		# chunked takes preference if content-length is given too.
-		$rq->{rpchunked} = 1;
+		$cbargs{chunked} = $rq->{rpchunked} = 1;
+		goto RESPONSE_HEADER_DONE;
+	    }
 
-	    } elsif ( my $cl = $kv{'content-length'} ) {
+	    if ( my $cl = $kv{'content-length'} ) {
 		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
 		    ($obj||$self)->fatal(
 			"multiple different content-length header in response",
@@ -753,24 +854,17 @@ sub _in1 {
 		    $self->{error} = 1;
 		    return $bytes;
 		}
-		$rq->{rpclen} = $cl->[0];
+		$cbargs{content_length} = $rq->{rpclen} = $cl->[0];
 		$self->{gap_upto}[1] = $self->{offset}[1] + $rq->{rpclen};
-
-	    } else {
-		# no length given but method supports body -> end with eof
-		$self->{gap_upto}[1] = -1;
+		goto RESPONSE_HEADER_DONE;
 	    }
 
+	    # no length given but method supports body -> end with eof
+	    $self->{gap_upto}[1] = -1;
+
+	    RESPONSE_HEADER_DONE:
 	    $DEBUG && $self->xdebug("got response header");
-	    $obj && $obj->in_response_header($hdr,$time,{
-		content_length => $rq->{rpclen},
-		$rq->{rpchunked} ? ( chunked => 1 ):(),
-		version => $version,
-		code => $code,
-		reason => $reason,
-		fields => \%kv,
-		$bad eq '' ? () : ( junk => $bad ),
-	    });
+	    $obj && $obj->in_response_header($hdr,$time,\%cbargs);
 
 	    # if no body invoke hook with empty body and eof
 	    if ( defined $rq->{rpclen} and $rq->{rpclen} == 0 ) {
@@ -1013,6 +1107,294 @@ sub dump_state {
     $self->xdebug($msg);
 }
 
+sub upgrade_CONNECT {
+    my ($self,$obj) = @_;
+    my @sub;
+    if ($obj) {
+	weaken($obj);
+	for my $dir (0,1) {
+	    my $dir = $dir; # old $dir was alias only
+	    $sub[$dir] = sub {
+		my ($data,$eof,$time) = @_;
+		$obj->in_data($dir,$data,$eof,$time);
+		return ref($data) ? $data->[1] : length($data)
+	    }
+	};
+    } else {
+	$sub[0] = $sub[1] = sub {
+	    my $data = shift;
+	    return ref($data) ? $data->[1] : length($data)
+	};
+    }
+    @{$self->{gap_upto}} = (-1,-1);
+    return \@sub;
+}
+
+sub upgrade_websocket {
+    my ($self,$obj) = @_;
+    goto &upgrade_CONNECT if !$obj || !$obj->can('in_wsdata');
+
+    weaken($obj);
+    weaken($self);
+
+    my @sub;
+    for my $dir (0,1) {
+	my $dir = $dir; # old $dir is only alias
+	my $rbuf = '';
+
+	# If $clen is defined we are inside a frame ($current_frame).
+	# If $clen is not defined all other variables here do not matter.
+	# Since control messages might be in-between fragmented data messages we
+	# need to keep this information for an open data message.
+	my ($clen,$clenhi,$current_frame,$data_frame,$got_close);
+	my ($mask,$mask_offset);
+
+	$sub[$dir] = sub {
+	    my ($data,$eof,$time) = @_;
+	    my $err;
+
+	    # Handle data gaps. These are only allowed inside data frames.
+	    ############################################################
+	    if (ref($data)) {
+		croak "unknown type $data->[0]" if $data->[0] ne 'gap';
+		my $gap = $data->[1];
+		if (!defined $clen) {
+		    $err = "gap outside websocket frame";
+		    goto bad;
+		}
+		if (!$data_frame || $current_frame != $data_frame) {
+		    $err = "gap inside control frame";
+		    goto bad;
+		}
+		my $eom = 0; # end of message on end-of-frame + FIN frame
+		while ($gap>0) {
+		    if ($clen == 0) {
+			if (!$clenhi) {
+			    $err = "gap larger than frame size";
+			    goto bad;
+			}
+			$clenhi--;
+			$clen = 0xffffffff;
+			$gap--;
+			$mask_offset = ($mask_offset+1) % 4;
+
+		    } elsif ($gap > $clen) {
+			$gap -= $clen;
+			$mask_offset = ($mask_offset+$clen) % 4;
+			$clen = 0;
+		    } else { # $gap <= $clen
+			$clen -= $gap;
+			$mask_offset = ($mask_offset+$gap) % 4;
+			$gap = 0;
+		    }
+		}
+		if (!$clen && !$clenhi) {
+		    # frame done
+		    $eom = $current_frame->{fin} ? 1:0;
+		    $clen = undef;
+		}
+
+		$obj->in_wsdata($dir,$data,$eom,$time,$current_frame);
+		if ($eom) {
+		    # gaps are only allowed for data frames
+		    $data_frame = $current_frame = undef;
+		    $self->{gap_upto}[$dir] = 0;
+		}
+		return;
+	    }
+
+	    $rbuf .= $data;
+
+	    PARSE_DATA:
+
+	    # data for existing frame
+	    ############################################################
+	    if (defined $clen) {
+		my $size = length($rbuf);
+		if (!$size and $clen || $clenhi) {
+		    goto done if ! $eof;
+		    $err = "eof inside websocket frame";
+		    goto bad;
+		}
+		my $fwd = '';
+		my $eom = 0;
+		while ($size>0) {
+		    if ($clen == 0) {
+			last if !$clenhi;
+			$clenhi--;
+			$clen = 0xffffffff;
+			$size--;
+			$fwd .= substr($rbuf,0,1,'');
+		    } elsif ($size > $clen) {
+			$size -= $clen;
+			$fwd .= substr($rbuf,0,$clen,'');
+			$clen = 0;
+		    } else {  # $size < $clen
+			$clen -= $size;
+			$size = 0;
+			$fwd .= $rbuf;
+			$rbuf = '';
+		    }
+		}
+		if (!$clen && !$clenhi) {
+		    # frame done
+		    $eom = $current_frame->{fin} ? 1:0;
+		    $clen = undef;
+		}
+		# unmask masked data
+		if (defined $mask && $fwd ne '') {
+		    my $l = length($fwd);
+		    $fwd ^= substr($mask x int($l/4+2),$mask_offset,$l);
+		    $mask_offset = ($mask_offset+$l) % 4;
+		}
+		if ($data_frame && $current_frame == $data_frame) {
+		    $obj->in_wsdata($dir,$fwd,$eom,$time,$data_frame);
+		    $data_frame = undef if $eom;
+		} else {
+		    croak("expected to read full control frame")
+			if defined $clen;
+		    if ($current_frame->{opcode} == 0x8) {
+			# extract status + reason for close
+			if ($fwd eq '') {
+			    $current_frame->{status} = 1005; # RFC6455, 7.1.5
+			} elsif (length($fwd) < 2) {
+			    # if payload it must be at least 2 byte for status
+			    $err = "invalid length for close control frame";
+			    goto bad;
+			} else {
+			    ($current_frame->{status},$current_frame->{reason})
+				= unpack("na*",$fwd);
+			}
+		    }
+		    $obj->in_wsctl($dir,$fwd,$time,$current_frame);
+		}
+		goto done if !$size;
+		goto PARSE_DATA;
+	    }
+
+	    # start of new frame: read frame header
+	    ############################################################
+	    goto hdr_need_more if length($rbuf)<2;
+
+	    (my $flags,$clen) = unpack("CC",$rbuf);
+	    $mask = $clen & 0x80;
+	    $clen &= 0x7f;
+	    $clenhi = 0;
+	    my $off = 2;
+
+	    if ($clen == 126) {
+		goto hdr_need_more if length($rbuf)<4;
+		($clen) = unpack("xxn",$rbuf);
+		goto bad_length if $clen<126;
+		$off = 4;
+	    } elsif ($clen == 127) {
+		goto hdr_need_more if length($rbuf)<10;
+		($clenhi,$clen) = unpack("xxNN",$rbuf);
+		goto bad_length if !$clenhi && $clen<2**16;
+		$off = 10;
+	    }
+	    if ($mask) {
+		goto hdr_need_more if length($rbuf)<$off+4;
+		($mask) = unpack("x${off}a4",$rbuf);
+		$mask_offset = 0;
+		$off+=4;
+	    } else {
+		$mask = undef;
+	    }
+
+	    my $opcode = $flags & 0b00001111;
+	    my $fin    = $flags & 0b10000000;
+	    goto reserved_flag if $flags & 0b01110000;
+
+	    if ($opcode >= 0x8) {
+		# control frame
+		goto reserved_opcode if $opcode >= 0xb;
+		if (!$fin) {
+		    $err = "fragmented control frames are forbidden";
+		    goto bad;
+		}
+		if ($clenhi || $clen>125) {
+		    $err = "control frames should be <= 125 bytes";
+		    goto bad;
+		}
+		# We like to forward control frames as a single entity, so make
+		# sure we get the whole (small) frame at once.
+		goto hdr_need_more if $off+$clen > length($rbuf);
+
+		$current_frame = {
+		    opcode => $opcode,
+		    defined($mask) ? ( mask => $mask ):()
+		};
+		$got_close = 1 if $opcode == 0x8;
+
+	    } elsif ($opcode>0) {
+		# data frame, but no continuation
+		goto reserved_opcode if $opcode >= 0x3;
+		if ($got_close) {
+		    $err = "data frame after close";
+		    goto bad;
+		}
+		$current_frame = $data_frame = {
+		    opcode => $opcode,
+		    $fin ? ( fin => 1 ):(),
+		    defined($mask) ? ( mask => $mask ):()
+		};
+
+	    } else {
+		# continuation frame
+		if (!$data_frame) {
+		    $err = "continuation frame without previous data frame";
+		    goto bad;
+		}
+		$current_frame = $data_frame = {
+		    opcode => $data_frame->{opcode},
+		    $fin ? ( fin => 1 ):(),
+		    defined($mask) ? ( mask => $mask ):()
+		};
+	    }
+
+	    # done with frame header
+	    substr($rbuf,0,$off,'');
+	    goto PARSE_DATA;
+
+	    # Done
+	    ############################################################
+
+	    hdr_need_more:
+	    $clen = undef; # re-read from start if frame next time
+
+	    done:
+	    if (defined $clen) {
+		# Processed all inside rbuf we want more (data frame)
+		$self->{gap_upto}[$dir] = $self->{offset}[$dir] + (
+		    ! $clenhi ? $clen :           # len <=32 bit
+		    1 << 32 == 1 ? 0xffffffff :   # platform 32bit only
+		    ($clenhi << 32) + $clen       # full 64 bit
+		);
+	    }
+	    if ($eof) {
+		# forward eof as special wsctl with no frame
+		$obj->in_wsctl($dir,'',$time);
+	    }
+	    return;
+
+	    bad_length:
+	    $err ||= "non-minimal length representation in websocket frame";
+	    reserved_flag:
+	    $err ||= "extensions using reserved flags are not supported";
+	    reserved_opcode:
+	    $err ||= "no support for opcode $opcode";
+
+	    bad:
+	    $self->{error} = 1;
+	    $obj->fatal($err,$dir,$time);
+	    return;
+	};
+    }
+    return \@sub;
+}
+
+
 1;
 
 __END__
@@ -1110,6 +1492,11 @@ $header is the string of the header.
 
 =item chunked - true if body uses transfer encoding chunked
 
+=item upgrade - contains hash when protocol upgrade was requested
+
+Currently this hash contains the key C<websocket> with the value of the
+C<sec-websocket-key> if a valid request for a Websocket upgrade was detected.
+
 =back
 
 
@@ -1136,6 +1523,8 @@ $header is the string of the header.
 
 =item chunked - true if body uses transfer encoding chunked
 
+=item upgrade - new protocol when switching protocols, e.g. 'websocket'
+
 =back
 
 =item $request->in_request_body($data,$eobody,$time)
@@ -1143,8 +1532,8 @@ $header is the string of the header.
 Called for a chunk of data of the request body.
 $eobody is true if this is the last chunk of the request body.
 If the request body is empty the method will be called once with C<''>.
-If no body exists because of CONNECT or HTTP Upgrade C<in_data> will be called,
-not C<in_request_body>.
+If no body exists because of CONNECT or HTTP Upgrade C<in_data> or the websocket
+functions will be called, not C<in_request_body>.
 
 $data can be C<< [ 'gap' => $len ] >> if the input to this
 layer were gaps.
@@ -1155,8 +1544,8 @@ Called for a chunk of data of the response body.
 $eof is true if this is the last chunk of the connection.
 $eobody is true if this is the last chunk of the response body.
 If the response body is empty the method will be called once with C<''>.
-If no body exists because of CONNECT or HTTP Upgrade C<in_data> will be called,
-not C<in_response_body>.
+If no body exists because of CONNECT or HTTP Upgrade C<in_data> or the websocket
+functions will be called, not C<in_response_body>.
 
 $data can be C<< [ 'gap' => $len ] >> if the input to this
 layer were gaps.
@@ -1177,8 +1566,36 @@ Will be called after in_response_body/in_request_body got called with eof true.
 
 =item $request->in_data($dir,$data,$eof,$time)
 
-Will be called for any data after successful CONNECT or Upgrade, Websockets...
+Will be called for any data after successful CONNECT or Upgrade.
+If no websocket functions are defined in the request object it will also be used
+for Websockets.
 C<$dir> is 0 for data from client, 1 for data from server.
+
+=item $request->in_wsctl($dir,$data,$time,\%frameinfo)
+
+This will be called after a Websocket upgrade when receiving a control frame.
+C<$dir> is 0 for data from client, 1 for data from server.
+C<$data> is the unmasked payload of the frame.
+C<%frameinfo> contains the C<opcode> of the frame and the C<mask> (binary).
+For a close frame it will also contain the extracted C<status> code and the
+C<reason>.
+
+C<in_wsctl> will be called on connection close with C<$data> of C<''> and no
+C<\%frameinfo> (i.e. no hash reference).
+
+=item $request->in_wsdata($dir,$data,$eom,$time,\%frameinfo)
+
+This will be called after a Websocket upgrade when receiving data inside a data
+frame. Contrary to (the short) control frames the data frame must not be read
+fully before calling C<in_wsdata>.
+
+C<$dir> is 0 for data from client, 1 for data from server.
+C<$data> is the unmasked payload of the frame.
+C<$eom> is true if the message is done with this call, that is if the data frame
+is done and the FIN bit was set on the frame.
+C<%frameinfo> contains the data type as C<opcode>. This will be the original
+opcode of the starting frame in case of fragmented transfer. It will also
+contain the C<mask> (binary) of the current frame.
 
 =item $request->in_junk($dir,$data,$eof,$time)
 

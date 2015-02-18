@@ -2,7 +2,11 @@ use strict;
 use warnings;
 use Net::Inspect::L7::HTTP;
 use Test::More;
-$Net::Inspect::Debug::DEBUG = 0;
+
+# $Net::Inspect::Debug::DEBUG = 1;
+
+my $debug_pcap = 0;  # write test as pcap for debugging
+require Net::PcapWriter if $debug_pcap;
 
 my @result;
 {
@@ -17,6 +21,8 @@ my @result;
     sub in_chunk_header    { push @result, [ 'chunk_header',  @_[1,2] ] }
     sub in_chunk_trailer   { push @result, [ 'chunk_trailer', @_[1,2] ] }
     sub in_data            { push @result, [ 'data',          @_[1,2] ] }
+    sub in_wsdata          { push @result, [ 'wsdata',    @_[1,2,3,5] ] }
+    sub in_wsctl           { push @result, [ 'wsctl',       @_[1,2,4] ] }
     sub fatal              { push @result, [ 'fatal',         @_[1,2] ] }
 }
 
@@ -143,11 +149,11 @@ my @tests = (
     ],
 
     [ "1xx continue response", 
-	0 => "GET / HTTP/1.1\r\n\r\n",
-	request_header => "GET / HTTP/1.1\r\n\r\n",
+	0 => "POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-length: 0\r\n\r\n",
+	request_header => "POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-length: 0\r\n\r\n",
 	request_body => '',
-	1 => "HTTP/1.0 100 Continue\r\n\r\n",
-	response_header => "HTTP/1.0 100 Continue\r\n\r\n",
+	1 => "HTTP/1.1 100 Continue\r\n\r\n",
+	response_header => "HTTP/1.1 100 Continue\r\n\r\n",
 	1 => "HTTP/1.1 204 no content\r\n\r\n",
 	response_header => "HTTP/1.1 204 no content\r\n\r\n",
 	response_body => '',
@@ -241,13 +247,13 @@ my @tests = (
 	gap_offset => [ 49,0 ],
 	gap_diff   => [ 10,0 ],
 	0 => [ gap => 10 ],
-	request_body => "gap|10",
+	request_body => "gap,10",
 	1 => "HTTP/1.0 200 Ok\r\nContent-length: 5\r\n\r\n",
 	response_header => "HTTP/1.0 200 Ok\r\nContent-length: 5\r\n\r\n",
 	gap_diff   => [ 0,5 ],
 	gap_offset => [ 0,43 ],
 	1 => [ gap => 5 ],
-	response_body => "gap|5",
+	response_body => "gap,5",
 
 	0 => "POST / HTTP/1.0\r\nContent-length: 8\r\n\r\n",
 	request_header => "POST / HTTP/1.0\r\nContent-length: 8\r\n\r\n",
@@ -256,29 +262,137 @@ my @tests = (
 	0 => "1234",
 	request_body => '1234',
 	0 => [ gap => 4 ],
-	request_body => "gap|4",
+	request_body => "gap,4",
 	1 => "HTTP/1.0 200 Ok\r\nContent-length: 4\r\n\r\n43",
 	response_header => "HTTP/1.0 200 Ok\r\nContent-length: 4\r\n\r\n",
 	response_body => '43',
 	gap_offset => [ 0,85 ],
 	gap_diff   => [ 0,2 ],
 	1 => [ gap => 2 ],
-	response_body => "gap|2",
+	response_body => "gap,2",
 
 	gap_diff   => [ 0,0 ],
     ],
-
 );
+
+{
+    my $wsreq = "GET / HTTP/1.1\r\n".
+	"Connection: Upgrade,Keep-Alive\r\n".
+	"Upgrade: websocket\r\n".
+	"Sec-WebSocket-Key: VnZ9oyUU18BVohuELlSkQA==\r\n".
+	"Sec-WebSocket-Version: 13\r\n".
+	"\r\n";
+    my $wsrsp = "HTTP/1.1 101 Switching Protocols\r\n".
+	"Upgrade: Websocket\r\n".
+	"Sec-WebSocket-Accept: V2bG3i/4rNoOe4ODcYE1Ya7I9cQ=\r\n".
+	"Connection: Upgrade\r\n".
+	"\r\n";
+    my $wsframe = sub {
+	my ($opcode,$fin,$mask,$payload) = @_;
+	my $hdr = pack("C", ( $fin ? 0x80:0 ) | $opcode & 0x0f);
+	my $len = length($payload);
+	if ($len>= 2**16) {
+	    $hdr .= pack("CNN", 127|(defined $mask?0x80:0),
+		int($len/2**32), $len % 2**32);
+	} elsif ($len>=126) {
+	    $hdr .= pack("Cn",126|(defined $mask?0x80:0),$len);
+	} else {
+	    $hdr .= pack("C",$len|(defined $mask?0x80:0));
+	}
+	if (defined $mask) {
+	    $mask = pack("N",$mask);
+	    $hdr .= $mask;
+	    $payload ^= substr($mask x int($len/4+1),0,$len);
+	}
+	return $hdr . $payload;
+    };
+    my $ws_data0  = $wsframe->(0x2,0,0x12345678,"first" x 1_000);
+    my $ws_data0c = $wsframe->(0x0,0,0x23456789,"second" x 22_000);
+    my $ws_data0l = $wsframe->(0x0,1,0x34567890,"last" x 2);
+    my $ws_data1  = $wsframe->(0x1,1,undef,"fnord");
+    my $ws_close0 = $wsframe->(0x8,1,0x567890ab,pack("na*",4321,"foobar"));
+    my $ws_close1 = $wsframe->(0x8,1,undef,pack("na*",1234,"barfoot"));
+    my $ws_ping0  = $wsframe->(0x9,1,0x7890abcd,"foo");
+    my $ws_pong1  = $wsframe->(0xa,1,0x890abcde,"bar");
+
+    push @tests, [ 'websocket',
+	0 => $wsreq, request_header => $wsreq, request_body => '',
+	1 => $wsrsp, response_header => $wsrsp,
+	gap_diff => [ 0,0 ],
+
+	# first frame of data
+	0 => $ws_data0, wsdata => "0|".('first' x 1_000)."|0|mask=\x12\x34\x56\x78,opcode=2",
+
+	# in between ping+pong
+	0 => $ws_ping0, wsctl => "0|foo|mask=\x78\x90\xab\xcd,opcode=9",
+	1 => $ws_pong1, wsctl => "1|bar|mask=\x89\x0a\xbc\xde,opcode=10",
+
+	# second frame has header of 14 byte (8 byte for length)
+	0 => substr($ws_data0c,0,13), # no output should be after 13 bytes
+	0 => substr($ws_data0c,13,1), # add another one for full header
+	gap_diff => [ 132_000,0 ],     # full payload can be gapped
+
+	# forward first 10 bytes of payload and now expect wsdata
+	0 => substr($ws_data0c,14,10),
+	wsdata => "0|secondseco|0|mask=\x23\x45\x67\x89,opcode=2",
+	gap_diff => [ 131_990,0 ],
+
+	# forward slowly up to the 32-bit boundary
+	0 => [ gap => 65_524 ],  # payload: 65534
+	wsdata => "0|gap,65524|0|mask=\x23\x45\x67\x89,opcode=2",
+	gap_diff => [ 66_466,0 ],
+	0 => [ gap => 1 ],       # payload: 65535 -> 0xffffffff
+	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,opcode=2",
+	gap_diff => [ 66_465,0 ],
+	0 => [ gap => 1 ],       # payload: 65536 -> 1 << 32
+	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,opcode=2",
+	gap_diff => [ 66_464,0 ],
+	0 => [ gap => 1 ],       # payload: 65537
+	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,opcode=2",
+	gap_diff => [ 66_463,0 ],
+
+	# more of frame as gap
+	0 => [ gap => 66_460 ],
+	wsdata => "0|gap,66460|0|mask=\x23\x45\x67\x89,opcode=2",
+	gap_diff => [ 3,0 ],
+
+	# The last 3 octets of frame not gapped to check that the mask gets
+	# used correctly if not on mask boundary after gaps.
+	0 => substr($ws_data0c,-3),
+	wsdata => "0|ond|0|mask=\x23\x45\x67\x89,opcode=2",
+	gap_diff => [ 0,0 ],
+
+	# now we get some data from the server
+	1 => $ws_data1, wsdata => "1|fnord|1|fin=1,opcode=1",
+
+	# client closes
+	1 => $ws_close1, wsctl => '1|\x04\xd2barfoot|opcode=8,reason=barfoot,status=1234',
+
+	# server closes
+	0 => $ws_close0, wsctl => '0|\x10\xe1foobar|mask=\x56\x78\x90\xab,opcode=8,reason=foobar,status=4321',
+
+	# third frame from client is final frame
+	0 => $ws_data0l, wsdata => "0|lastlast|1|fin=1,mask=\x34\x56\x78\x90,opcode=2",
+
+	# EOF
+	0 => '', wsctl => '0||',
+	1 => '', wsctl => '1||',
+    ];
+}
 
 plan tests => 0+@tests;
 
 my $req = myRequest->new;
 my $http = Net::Inspect::L7::HTTP->new($req);
-for my $t (@tests) {
+for( my $ti = 0;$ti<@tests;$ti++ ) {
+    my $t = $tests[$ti];
     my $conn = $http->new_connection({});
     my $desc = shift(@$t);
     my @buf;
     @result = ();
+    my $pw = $debug_pcap && Net::PcapWriter->new("test$ti.pcap")
+	->tcp_conn('1.1.1.1',11111,'2.2.2.2',80);
+
     if ( eval {
 	while (@$t) {
 	    my ($what,$data) = splice(@$t,0,2);
@@ -286,9 +400,11 @@ for my $t (@tests) {
 		die "expected no hooks, got @{$result[0]}" if @result;
 		# put into $conn
 		if (ref($data)) {
+		    $pw && $pw->write(0+$what,"#" x $data->[1]);
 		    die "unhandled data in buf before gap" if $buf[$what] ne '';
 		    $conn->in(0+$what,$data,$data->[1]==0,0);
 		} else {
+		    $pw && $pw->write(0+$what,$data);
 		    $buf[$what] .= $data;
 		    my $n = $conn->in(0+$what,$buf[$what],$data eq '' ? 1:0,0);
 		    substr( $buf[$what],0,$n,'' );
@@ -313,11 +429,18 @@ for my $t (@tests) {
 		die "expected $what, got no results"
 	    } else {
 		my $have = do {
-		    my ($what,$data,@rest) = @{shift(@result)};
-		    join('|',$what, ref($data)? @$data:$data,@rest );
+		    my @r = @{shift(@result)};
+		    for my $r (@r) {
+			$r = [ map { "$_=$r->{$_}" } sort keys %$r ]
+			    if ref($r) eq 'HASH';
+			$r = join(",",@$r) if ref($r) eq 'ARRAY';
+			$r = _escape($r);
+		    }
+		    join('|',@r);
 		};
 		my $want = join('|',$what, ref($data)? @$data:$data);
-		die "expected '$want', got '$have'" if $want ne $have;
+		die sprintf "expected '$want', got '$have'" if
+		    $want ne $have and _unescape($want) ne _unescape($have);
 	    }
 	}
 	die "expected no more hooks, got @{$result[0]}" if @result;
@@ -331,3 +454,38 @@ for my $t (@tests) {
     }
 }
 
+sub _escape {
+    my $r = shift // return '';
+    $r =~ s{
+	(\\)
+	| (\r)
+	| (\n)
+	| (\t)
+	| ([\x00-\x1f\x7f-\xff])
+    }{
+	$1 ? "\\\\" :
+	$2 ? "\\r" :
+	$3 ? "\\n" :
+	$4 ? "\\t" :
+	sprintf("\\x%02x",ord($5))
+    }xesg;
+    return $r;
+}
+
+sub _unescape {
+    my $r = shift // return '';
+    $r =~ s{(?<!\\)(?:
+	(\\\\)
+	| (\\r)
+	| (\\n)
+	| (\\t)
+	| \\x([\da-fA-F]{2})
+    )}{
+	$1 ? "\\" :
+	$2 ? "\r" :
+	$3 ? "\n" :
+	$4 ? "\t" :
+	chr(hex($5))
+    }xesg;
+    return $r;
+}
