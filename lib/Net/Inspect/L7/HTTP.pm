@@ -38,7 +38,7 @@ our (@EXPORT_OK,%EXPORT_TAGS);
 	)]
     );
     push @EXPORT_OK,@$_ for (values %EXPORT_TAGS);
-    push @EXPORT_OK,'parse_hdrfields','parse_reqhdr';
+    push @EXPORT_OK,'parse_hdrfields','parse_reqhdr','parse_rsphdr';
 }
 
 use constant {
@@ -55,6 +55,11 @@ use constant {
     RPHDR_DONE => 0b01000,
     RPBDY_DONE_ON_EOF => 0b10000,
 };
+
+my %Upgrade2Sub = (
+    'websocket' => \&upgrade_websocket,
+    'CONNECT'   => \&upgrade_CONNECT,
+);
 
 # rfc2616, 2.2
 #  token          = 1*<any CHAR except CTLs or separators>
@@ -341,7 +346,7 @@ sub _in0 {
 	    $rq->{state} |= RQHDR_DONE; # rqhdr done
 
 	    my %hdr;
-	    my $err = parse_rqhdr($hdr,\%hdr);
+	    my $err = parse_reqhdr($hdr,\%hdr);
 	    if ($err) {
 		($obj||$self)->fatal($err,0,$time);
 		$rq->{state} |= RQ_ERROR;
@@ -607,166 +612,78 @@ sub _in1 {
 	}
 
 	# no response header yet, check if data contains it
-	if ( $data =~s{( \A
-	    HTTP/(1\.[01])[\040\t]+          # version
-	    (\d\d\d)                         # code
-	    (?:[\040\t]+([^\r\n]*))?         # reason
-	    \r?\n
-	    ([^\r\n].*?\n)?                  # fields
-	    \r?\n                            # empty line
-	)}{}sxi) {
-	    my ($hdr,$version,$code,$reason) = ($1,$2,$3,$4);
-	    my %kv;
-	    my $bad = parse_hdrfields($5,\%kv);
-	    %TRACE && ($obj||$self)->xtrace("invalid response header data: $bad") 
-		if $bad ne '';
-
+	if ( $data =~s{\A(.*?\n\r?\n)}{}s ) {
+	    my $hdr = $1;
 	    my $n = length($hdr);
 	    $bytes += $n;
 	    $self->{offset}[1] += $n;
 
-	    my %cbargs = (
-		content_length => undef,
-		version => $version,
-		code => $code,
-		reason => $reason,
-		fields => \%kv,
-		$bad eq '' ? () : ( junk => $bad ),
-	    );
+	    my %hdr;
+	    my $err = parse_rsphdr($hdr, {
+		method  => $rq->{method},
+		upgrade => $rq->{upgrade},
+		expect  => $rq->{expect},
+	    }, \%hdr);
 
+	    goto error if $err;
+	    $DEBUG && $self->xdebug("got response header");
 
-	    if ($code == 100 and $rq->{expect}{'100-continue'}
-		or $code == 102) {
-		$DEBUG && $self->xdebug("got preliminary response");
+	    %TRACE && $hdr{junk} && ($obj||$self)->xtrace(
+		"invalid request header data: $hdr{junk}");
 
-		# preliminary responses do not contain any body
-		$cbargs{content_length} = 0;
-		$obj && $obj->in_response_header($hdr,$time,\%cbargs);
+	    if ($hdr{preliminary}) {
+		# Preliminary response. Wait for read real response.
+		$obj && $obj->in_response_header($hdr,$time,\%hdr);
 		goto READ_DATA;
-
-	    } elsif ($code != 101 and $code <= 199) {
-		$self->{error} = 1;
-		($obj||$self)->fatal("unexpected status code $code",1,$time);
-		return $bytes;
 	    }
 
 	    $rq->{state} |= RPHDR_DONE; # response header done
 
-	    # Switching Protocols
-	    # Any upgrade must have both a "Connection: upgrade" and a
-	    # "Upgrade: newprotocol" header.
-	    if ($code == 101) {
-		my %proto;
-		if ($rq->{upgrade}
-		    and grep { m{\bUPGRADE\b}i } @{$kv{connection} || []}) {
-		    for(@{$kv{upgrade} || []}) {
-			$proto{lc($_)} = 1 for split(m{\s*[,;]\s*});
-		    }
-		}
-
-		# Currently only Websocket is supported.
-		if (keys(%proto) == 1
-		    and $proto{websocket}
-		    and my $wsk = $rq->{upgrade}{websocket}
-		    and my $wsa = $kv{'sec-websocket-accept'}) {
-		    if ($wsa && @$wsa != 1) {
-			my %x;
-			$wsa = [ map { $x{$_}++ ? ():($_) } @$wsa ];
-		    }
-		    # beware its magic! see RFC6455 page 7
-		    # sha1_base64 does no padding, so we need to add a single
-		    # '=' (pad to 4*7 byte) at the end for comparison
-		    if ( @$wsa != 1 or $wsa->[0] ne sha1_base64(
-			$wsk.'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').'=') {
-			$self->{error} = 1;
-			($obj||$self)->fatal(
-			    "invalid websocket upgrade response",1,$time);
-			return $bytes;
-		    }
-
-		    $cbargs{upgrade} = 'websocket';
-		    $self->{upgrade} = upgrade_websocket($self,$obj);
-		    $rq->{rqclen} = $rq->{rpclen} = undef;
-		    goto RESPONSE_HEADER_DONE;
-
-		} else {
-		    $self->{error} = 1;
-		    ($obj||$self)->fatal(
-			"invalid or unsupported connection upgrade",1,$time);
-		    return $bytes;
-		}
+	    if ($hdr{upgrade}) {
+		# Reset length to undef since we need to read until eof.
+		$rq->{rpclen} = undef;
+		$self->{upgrade} = $Upgrade2Sub{$hdr{upgrade}}($self,$obj)
+		or do {
+		    $err = "invalid or unsupported connection upgrade";
+		    goto error;
+		};
+		goto done;
 	    }
 
-	    # Forget any $rq->{upgrade} we did not get 101 response.
+	    # Forget any $rq->{upgrade} since we did not get 101 response.
 	    # This might be due to authorization required etc.
 	    $rq->{upgrade} = undef;
 
-
-	    if ( $rq->{method} eq 'CONNECT' and $code =~m{^2} ) {
-		$cbargs{upgrade} = 'CONNECT';
-		$self->{upgrade} = upgrade_CONNECT($self,$obj),
-		# Since CONNECT was successful we can now allow unlimited
-		# request and response body data.
-		$rq->{rqclen} = $rq->{rpclen} = undef;
-		goto RESPONSE_HEADER_DONE;
-	    }
-
-	    if ( $METHODS_WITHOUT_RPBODY{ $rq->{method} }
-		or $CODE_WITHOUT_RPBODY{$code} ) {
-		# no content, even if specified
-		$cbargs{content_length} = $rq->{rpclen} = 0;
-		goto RESPONSE_HEADER_DONE;
-	    }
-
-	    if ( $version >= 1.1 and
-		grep { m{(?:^|[ \t,])chunked(?:$|[ \t,;])}i }
-		    @{ $kv{'transfer-encoding'} || [] }
-	    ) {
-		# RFC2616 4.4.3:
-		# chunked takes preference if content-length is given too.
-		$cbargs{chunked} = $rq->{rpchunked} = 1;
-		goto RESPONSE_HEADER_DONE;
-	    }
-
-	    if ( my $cl = $kv{'content-length'} ) {
-		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
-		    ($obj||$self)->fatal(
-			"multiple different content-length header in response",
-			1,$time);
-		    $self->{error} = 1;
-		    return $bytes;
+	    my $body_done;
+	    if ($hdr{chunked}) {
+		$rq->{rpchunked} = 1;
+	    } elsif (defined $hdr{content_length}) {
+		if (($rq->{rpclen} = $hdr{content_length})) {
+		    # content_length > 0, can do gaps
+		    $self->{gap_upto}[1]= $self->{offset}[1]
+			+ $hdr{content_length};
+		} else {
+		    $body_done = 1;
 		}
-		if ($cl->[0] !~m{^(\d+)$}) {
-		    ($obj||$self)->fatal(
-			"invalid content-length '$cl->[0]' in response",
-			1,$time);
-		    $self->{error} = 1;
-		    return $bytes;
-		}
-		$cbargs{content_length} = $rq->{rpclen} = $cl->[0];
-		$self->{gap_upto}[1] = $self->{offset}[1] + $rq->{rpclen};
-		goto RESPONSE_HEADER_DONE;
+	    } else {
+		# no length given but method supports body -> end with eof
+		$rq->{state} |= RPBDY_DONE_ON_EOF; # body done when eof
+		$self->{gap_upto}[1] = -1;
 	    }
 
-	    # no length given but method supports body -> end with eof
-	    $self->{gap_upto}[1] = -1;
-
-	    RESPONSE_HEADER_DONE:
-	    $DEBUG && $self->xdebug("got response header");
-	    $obj && $obj->in_response_header($hdr,$time,\%cbargs);
-
-	    # if no body invoke hook with empty body and eof
-	    if ( defined $rq->{rpclen} and $rq->{rpclen} == 0 ) {
-		# clen == 0 -> body done
+	    done:
+	    $obj && $obj->in_response_header($hdr,$time,\%hdr);
+	    if ($body_done) {
 		$DEBUG && $self->xdebug("no response body");
 		pop(@$rqs);
 		$obj && $obj->in_response_body('',1,$time);
-		goto READ_DATA;
 	    }
+	    goto READ_DATA;
 
-	    if ( ! $rq->{rpchunked} && ! $rq->{rpclen} ) {
-		$rq->{state} |= RPBDY_DONE_ON_EOF; # body done when eof
-	    }
+	    error:
+	    $self->{error} = 1;
+	    ($obj||$self)->fatal($err,1,$time);
+	    return $bytes;
 
 	} elsif ( $data =~m{[^\n]\r?\n\r?\n}g ) {
 	    ($obj||$self)->fatal( sprintf("invalid response header syntax '%s'",
@@ -944,7 +861,7 @@ sub parse_hdrfields {
     return $bad;
 }
 
-sub parse_rqhdr {
+sub parse_reqhdr {
     my ($data,$hdr) = @_;
     $data =~m{\A
 	([A-Z]{2,20})[\040\t]+          # $1: method
@@ -999,9 +916,9 @@ sub parse_rqhdr {
     }
 
     if ( $METHODS_WITHOUT_RQBODY{$method} ) {
-	return "no body allowed with method $method"
-	    if $hdr->{content_length} or $hdr->{chunked};
+	# Ignore any kind of length information.
 	$hdr->{content_length} = 0;
+	delete $hdr->{chunked};
 
     } elsif ( $METHODS_WITH_RQBODY{$method} ) {
 	return "content-length or transfer-encoding chunked must be given with method $method"
@@ -1037,6 +954,115 @@ sub parse_rqhdr {
 	}
     }
     return; # no error
+}
+
+sub parse_rsphdr {
+    my ($data,$request,$hdr) = @_;
+    $data =~ m{\A
+	HTTP/(1\.[01])[\040\t]+          # $1: version
+	(\d\d\d)                         # $2: code
+	(?:[\040\t]+([^\r\n]*))?         # $3: reason
+	\r?\n
+	([^\r\n].*?\n)?                  # $4: fields
+	\r?\n                            # empty line
+    \Z}sx or return "invalid response header";
+
+    my $version = $1;
+    my $code = $2;
+    %$hdr = (
+	version   => $version,
+	code      => $code,
+	reason    => $3,
+	# fields
+	# junk
+	# content_length
+	# chunked
+	# upgrade
+	# preliminary
+    );
+
+    my %kv;
+    my $bad = parse_hdrfields($4,\%kv);
+    $hdr->{fields} = \%kv;
+    $hdr->{junk} = $bad if $bad ne '';
+
+    if ($code == 100 and $request->{expect}{'100-continue'}
+	or $code == 102) {
+	# Preliminary responses do not contain any body.
+	# 100 should only happen with Expect: 100-continue from client
+	$hdr->{preliminary} = 1;
+	$hdr->{content_length} = 0;
+    } elsif ($code != 101 and $code <= 199) {
+	return "unexpected status code $code";
+    }
+
+    # Switching Protocols
+    # Any upgrade must have both a "Connection: upgrade" and a
+    # "Upgrade: newprotocol" header.
+    if ($code == 101) {
+	my %proto;
+	if ($request->{upgrade}
+	    and grep { m{\bUPGRADE\b}i } @{$kv{connection} || []}) {
+	    for(@{$kv{upgrade} || []}) {
+		$proto{lc($_)} = 1 for split(m{\s*[,;]\s*});
+	    }
+	}
+
+	# Currently only Websocket is supported.
+	if (keys(%proto) == 1
+	    and $proto{websocket}
+	    and my $wsk = $request->{upgrade}{websocket}
+	    and my $wsa = $kv{'sec-websocket-accept'}) {
+	    if ($wsa && @$wsa != 1) {
+		my %x;
+		$wsa = [ map { $x{$_}++ ? ():($_) } @$wsa ];
+	    }
+	    # beware its magic! see RFC6455 page 7
+	    # sha1_base64 does no padding, so we need to add a single
+	    # '=' (pad to 4*7 byte) at the end for comparison
+	    if ( @$wsa != 1 or $wsa->[0] ne sha1_base64(
+		$wsk.'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').'=') {
+		return "invalid websocket upgrade response";
+	    }
+	    $hdr->{upgrade} = 'websocket';
+	    return;
+
+	} else {
+	    return "invalid or unsupported connection upgrade";
+	}
+    }
+
+    # successful response to CONNECT
+    if ($request->{method} eq 'CONNECT' and $code >= 200 and $code < 300) {
+	$hdr->{upgrade} = 'CONNECT';
+	return;
+    }
+
+    # RFC2616 4.4.3:
+    # chunked transfer-encoding takes preferece before content-length
+    if ( $version >= 1.1 and
+	grep { m{(?:^|[ \t,])chunked(?:$|[ \t,;])}i }
+	    @{ $kv{'transfer-encoding'} || [] }
+    ) {
+	$hdr->{chunked} = 1;
+
+    } elsif ( my $cl = $kv{'content-length'} ) {
+	return "multiple different content-length header in response"
+	    if @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1;
+	return "invalid content-length '$cl->[0]' in response"
+	    if $cl->[0] !~m{^(\d+)$};
+	$hdr->{content_length} = $cl->[0];
+    }
+
+    if ($CODE_WITHOUT_RPBODY{$code}
+	or $METHODS_WITHOUT_RPBODY{$request->{method}}) {
+	# no content, even if specified
+	$hdr->{content_length} = 0;
+	delete $hdr->{chunked};
+	return;
+    }
+
+    return;
 }
 
 
@@ -1174,13 +1200,13 @@ sub upgrade_websocket {
 		}
 		if (!$clen && !$clenhi) {
 		    # frame done
-		    $eom = $current_frame->{fin} ? 1:0;
+		    $eom = $data_frame->{fin} ? 1:0;
 		    $clen = undef;
 		}
 
-		$obj->in_wsdata($dir,$data,$eom,$time,$current_frame);
+		$obj->in_wsdata($dir,$data,$eom,$time,$data_frame);
+		delete $data_frame->{init};
 		if ($eom) {
-		    # gaps are only allowed for data frames
 		    $data_frame = $current_frame = undef;
 		    $self->{gap_upto}[$dir] = 0;
 		}
@@ -1233,10 +1259,10 @@ sub upgrade_websocket {
 		}
 		if ($data_frame && $current_frame == $data_frame) {
 		    $obj->in_wsdata($dir,$fwd,$eom,$time,$data_frame);
+		    delete $data_frame->{init};
 		    $data_frame = undef if $eom;
 		} else {
-		    croak("expected to read full control frame")
-			if defined $clen;
+		    die "expected to read full control frame" if defined $clen;
 		    if ($current_frame->{opcode} == 0x8) {
 			# extract status + reason for close
 			if ($fwd eq '') {
@@ -1321,6 +1347,7 @@ sub upgrade_websocket {
 		$current_frame = $data_frame = {
 		    opcode => $opcode,
 		    $fin ? ( fin => 1 ):(),
+		    init => 1,  # initial data
 		    defined($mask) ? ( mask => $mask ):()
 		};
 
@@ -1515,6 +1542,8 @@ $header is the string of the header.
 
 =item upgrade - new protocol when switching protocols, e.g. 'websocket'
 
+=item preliminary - true if this is a preliminary response
+
 =back
 
 =item $request->in_request_body($data,$eobody,$time)
@@ -1694,6 +1723,18 @@ return C<''>.
 This will parse the given C<$string> as a request header and extract information
 into \%header. These information then later will be given to
 C<in_request_header>. See there for more details about the contents of the hash.
+
+=item parse_rsphdr($string,\%request,\%header) -> $bad_header
+
+This will parse the given C<$string> as a response header and extract
+information into \%header. These information then later will be given to
+C<in_request_header>. See there for more details about the contents of the
+hash.
+
+C<%request> contains information about the request. One might simple use the
+hash filled by C<parse_reqhdr> here. If not at least the information about
+C<method>, C<expect> and C<upgrade> must be provided because they are needed to
+interpret the response correctly.
 
 =back
 
