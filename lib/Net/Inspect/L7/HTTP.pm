@@ -1156,8 +1156,7 @@ sub upgrade_websocket {
 	# If $clen is not defined all other variables here do not matter.
 	# Since control messages might be in-between fragmented data messages we
 	# need to keep this information for an open data message.
-	my ($clen,$clenhi,$current_frame,$data_frame,$got_close);
-	my ($mask,$mask_offset);
+	my ($clen,$clenhi,$current_frame,$data_frame,$ctl_frame,$got_close);
 
 	$sub[$dir] = sub {
 	    my ($data,$eof,$time) = @_;
@@ -1186,15 +1185,18 @@ sub upgrade_websocket {
 			$clenhi--;
 			$clen = 0xffffffff;
 			$gap--;
-			$mask_offset = ($mask_offset+1) % 4;
+			$current_frame->{mask_offset}
+			    = (($current_frame->{mask_offset}||0) + 1) % 4;
 
 		    } elsif ($gap > $clen) {
 			$gap -= $clen;
-			$mask_offset = ($mask_offset+$clen) % 4;
+			$current_frame->{mask_offset}
+			    = (($current_frame->{mask_offset}||0) + $clen) % 4;
 			$clen = 0;
 		    } else { # $gap <= $clen
 			$clen -= $gap;
-			$mask_offset = ($mask_offset+$gap) % 4;
+			$current_frame->{mask_offset}
+			    = (($current_frame->{mask_offset}||0) + $gap) % 4;
 			$gap = 0;
 		    }
 		}
@@ -1251,16 +1253,16 @@ sub upgrade_websocket {
 		    $eom = $current_frame->{fin} ? 1:0;
 		    $clen = undef;
 		}
-		# unmask masked data
-		if (defined $mask && $fwd ne '') {
-		    my $l = length($fwd);
-		    $fwd ^= substr($mask x int($l/4+2),$mask_offset,$l);
-		    $mask_offset = ($mask_offset+$l) % 4;
-		}
 		if ($data_frame && $current_frame == $data_frame) {
 		    $obj->in_wsdata($dir,$fwd,$eom,$time,$data_frame);
-		    delete $data_frame->{init};
-		    $data_frame = undef if $eom;
+		    if ($eom) {
+			$data_frame = undef;
+		    } else {
+			delete $data_frame->{init};
+			$current_frame->{mask_offset}
+			    = (($current_frame->{mask_offset}||0) + length($fwd)) % 4
+			    if defined $clen;
+		    }
 		} else {
 		    die "expected to read full control frame" if defined $clen;
 		    if ($current_frame->{opcode} == 0x8) {
@@ -1273,7 +1275,7 @@ sub upgrade_websocket {
 			    goto bad;
 			} else {
 			    ($current_frame->{status},$current_frame->{reason})
-				= unpack("na*",$fwd);
+				= unpack("na*",$current_frame->unmask($fwd));
 			}
 		    }
 		    $obj->in_wsctl($dir,$fwd,$time,$current_frame);
@@ -1287,7 +1289,7 @@ sub upgrade_websocket {
 	    goto hdr_need_more if length($rbuf)<2;
 
 	    (my $flags,$clen) = unpack("CC",$rbuf);
-	    $mask = $clen & 0x80;
+	    my $mask = $clen & 0x80;
 	    $clen &= 0x7f;
 	    $clenhi = 0;
 	    my $off = 2;
@@ -1306,7 +1308,6 @@ sub upgrade_websocket {
 	    if ($mask) {
 		goto hdr_need_more if length($rbuf)<$off+4;
 		($mask) = unpack("x${off}a4",$rbuf);
-		$mask_offset = 0;
 		$off+=4;
 	    } else {
 		$mask = undef;
@@ -1331,10 +1332,12 @@ sub upgrade_websocket {
 		# sure we get the whole (small) frame at once.
 		goto hdr_need_more if $off+$clen > length($rbuf);
 
-		$current_frame = {
+		$current_frame = $ctl_frame
+		    ||= Net::Inspect::L7::HTTP::_WSFrame->new;
+		%$current_frame = (
 		    opcode => $opcode,
 		    defined($mask) ? ( mask => $mask ):()
-		};
+		);
 		$got_close = 1 if $opcode == 0x8;
 
 	    } elsif ($opcode>0) {
@@ -1344,12 +1347,14 @@ sub upgrade_websocket {
 		    $err = "data frame after close";
 		    goto bad;
 		}
-		$current_frame = $data_frame = {
+		$current_frame = $data_frame
+		    ||= Net::Inspect::L7::HTTP::_WSFrame->new;
+		%$current_frame = (
 		    opcode => $opcode,
 		    $fin ? ( fin => 1 ):(),
 		    init => 1,  # initial data
 		    defined($mask) ? ( mask => $mask ):()
-		};
+		);
 
 	    } else {
 		# continuation frame
@@ -1357,11 +1362,12 @@ sub upgrade_websocket {
 		    $err = "continuation frame without previous data frame";
 		    goto bad;
 		}
-		$current_frame = $data_frame = {
+		$current_frame = $data_frame;
+		%$current_frame = (
 		    opcode => $data_frame->{opcode},
 		    $fin ? ( fin => 1 ):(),
 		    defined($mask) ? ( mask => $mask ):()
-		};
+		);
 	    }
 
 	    # done with frame header
@@ -1403,6 +1409,18 @@ sub upgrade_websocket {
 	};
     }
     return \@sub;
+}
+
+{
+    package Net::Inspect::L7::HTTP::_WSFrame;
+    sub new { bless {}, shift };
+    sub unmask {
+	my ($self,$data) = @_;
+	return $data if $data eq '' or ! $self->{mask};
+	my $l = length($data);
+	$data ^= substr($self->{mask} x int($l/4+2),$self->{mask_offset}||0,$l);
+	return $data;
+    };
 }
 
 
@@ -1590,19 +1608,21 @@ If no websocket functions are defined in the request object it will also be used
 for Websockets.
 C<$dir> is 0 for data from client, 1 for data from server.
 
-=item $request->in_wsctl($dir,$data,$time,\%frameinfo)
+=item $request->in_wsctl($dir,$data,$time,$frameinfo)
 
 This will be called after a Websocket upgrade when receiving a control frame.
 C<$dir> is 0 for data from client, 1 for data from server.
 C<$data> is the unmasked payload of the frame.
-C<%frameinfo> contains the C<opcode> of the frame and the C<mask> (binary).
-For a close frame it will also contain the extracted C<status> code and the
-C<reason>.
+C<$frameinfo> is a blessed hash reference which contains the C<opcode> of the
+frame and the C<mask> (binary). For a close frame it will also contain the
+extracted C<status> code and the C<reason>.
+
+To get the unmasked payload call C<< $frameinfo->unmask($masked_data) >>.
 
 C<in_wsctl> will be called on connection close with C<$data> of C<''> and no
 C<\%frameinfo> (i.e. no hash reference).
 
-=item $request->in_wsdata($dir,$data,$eom,$time,\%frameinfo)
+=item $request->in_wsdata($dir,$data,$eom,$time,$frameinfo)
 
 This will be called after a Websocket upgrade when receiving data inside a data
 frame. Contrary to (the short) control frames the data frame must not be read
@@ -1612,9 +1632,12 @@ C<$dir> is 0 for data from client, 1 for data from server.
 C<$data> is the unmasked payload of the frame.
 C<$eom> is true if the message is done with this call, that is if the data frame
 is done and the FIN bit was set on the frame.
-C<%frameinfo> contains the data type as C<opcode>. This will be the original
-opcode of the starting frame in case of fragmented transfer. It will also
-contain the C<mask> (binary) of the current frame.
+C<$frameinfo> is a blessed hash reference which contains the data type as
+C<opcode>. This will be the original opcode of the starting frame in case of
+fragmented transfer. It will also contain the C<mask> (binary) of the current
+frame.
+
+To get the unmasked payload call C<< $frameinfo->unmask($masked_data) >>.
 
 =item $request->in_junk($dir,$data,$eof,$time)
 

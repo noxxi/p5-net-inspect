@@ -21,8 +21,16 @@ my @result;
     sub in_chunk_header    { push @result, [ 'chunk_header',  @_[1,2] ] }
     sub in_chunk_trailer   { push @result, [ 'chunk_trailer', @_[1,2] ] }
     sub in_data            { push @result, [ 'data',          @_[1,2] ] }
-    sub in_wsdata          { push @result, [ 'wsdata',    @_[1,2,3,5] ] }
-    sub in_wsctl           { push @result, [ 'wsctl',       @_[1,2,4] ] }
+    sub in_wsdata {
+	my ($self,$dir,$data,$eom,$time,$frameinfo) = @_;
+	$data = $frameinfo->unmask($data) if $data ne '' and ! ref $data;
+	push @result, ['wsdata',$dir,$data,$eom,{ %$frameinfo }];
+    }
+    sub in_wsctl {
+	my ($self,$dir,$data,$time,$frameinfo) = @_;
+	$data = $frameinfo->unmask($data) if $data ne '' and ! ref $data;
+	push @result, ['wsctl',$dir,$data,$frameinfo ? { %$frameinfo }: undef];
+    }
     sub fatal              { push @result, [ 'fatal',         @_[1,2] ] }
 }
 
@@ -321,7 +329,7 @@ my @tests = (
 	gap_diff => [ 0,0 ],
 
 	# first frame of data
-	0 => $ws_data0, wsdata => "0|".('first' x 1_000)."|0|mask=\x12\x34\x56\x78,opcode=2",
+	0 => $ws_data0, wsdata => "0|".('first' x 1_000)."|0|init=1,mask=\x12\x34\x56\x78,opcode=2",
 
 	# in between ping+pong
 	0 => $ws_ping0, wsctl => "0|foo|mask=\x78\x90\xab\xcd,opcode=9",
@@ -339,31 +347,31 @@ my @tests = (
 
 	# forward slowly up to the 32-bit boundary
 	0 => [ gap => 65_524 ],  # payload: 65534
-	wsdata => "0|gap,65524|0|mask=\x23\x45\x67\x89,opcode=2",
+	wsdata => "0|gap,65524|0|mask=\x23\x45\x67\x89,mask_offset=2,opcode=2",
 	gap_diff => [ 66_466,0 ],
 	0 => [ gap => 1 ],       # payload: 65535 -> 0xffffffff
-	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,opcode=2",
+	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,mask_offset=3,opcode=2",
 	gap_diff => [ 66_465,0 ],
 	0 => [ gap => 1 ],       # payload: 65536 -> 1 << 32
-	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,opcode=2",
+	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,mask_offset=0,opcode=2",
 	gap_diff => [ 66_464,0 ],
 	0 => [ gap => 1 ],       # payload: 65537
-	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,opcode=2",
+	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,mask_offset=1,opcode=2",
 	gap_diff => [ 66_463,0 ],
 
 	# more of frame as gap
 	0 => [ gap => 66_460 ],
-	wsdata => "0|gap,66460|0|mask=\x23\x45\x67\x89,opcode=2",
+	wsdata => "0|gap,66460|0|mask=\x23\x45\x67\x89,mask_offset=1,opcode=2",
 	gap_diff => [ 3,0 ],
 
 	# The last 3 octets of frame not gapped to check that the mask gets
 	# used correctly if not on mask boundary after gaps.
 	0 => substr($ws_data0c,-3),
-	wsdata => "0|ond|0|mask=\x23\x45\x67\x89,opcode=2",
+	wsdata => "0|ond|0|mask=\x23\x45\x67\x89,mask_offset=1,opcode=2",
 	gap_diff => [ 0,0 ],
 
 	# now we get some data from the server
-	1 => $ws_data1, wsdata => "1|fnord|1|fin=1,opcode=1",
+	1 => $ws_data1, wsdata => "1|fnord|1|fin=1,init=1,opcode=1",
 
 	# client closes
 	1 => $ws_close1, wsctl => '1|\x04\xd2barfoot|opcode=8,reason=barfoot,status=1234',
@@ -432,8 +440,8 @@ for( my $ti = 0;$ti<@tests;$ti++ ) {
 		    my @r = @{shift(@result)};
 		    for my $r (@r) {
 			$r = [ map { "$_=$r->{$_}" } sort keys %$r ]
-			    if ref($r) eq 'HASH';
-			$r = join(",",@$r) if ref($r) eq 'ARRAY';
+			    if UNIVERSAL::isa($r,'HASH');
+			$r = join(",",@$r) if UNIVERSAL::isa($r,'ARRAY');
 			$r = _escape($r);
 		    }
 		    join('|',@r);
