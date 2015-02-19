@@ -113,7 +113,7 @@ sub guess_protocol {
 	    return ($obj,$n);
 
 	} elsif ( $buf =~m{[^\n]\r?\n\r?\n}
-	    or length($buf)>$self->{hdr_maxsz}[0] ) {
+	    or length($buf)>2**16 ) {
 	    # does not look like a HTTP header for me
 	    debug("does not look like HTTP header: $buf");
 	    $guess->detach($self);
