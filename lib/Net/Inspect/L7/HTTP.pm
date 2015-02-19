@@ -38,7 +38,7 @@ our (@EXPORT_OK,%EXPORT_TAGS);
 	)]
     );
     push @EXPORT_OK,@$_ for (values %EXPORT_TAGS);
-    push @EXPORT_OK,'parse_hdrfields';
+    push @EXPORT_OK,'parse_hdrfields','parse_reqhdr';
 }
 
 use constant {
@@ -332,159 +332,48 @@ sub _in0 {
 	}
 
 	$DEBUG && $self->xdebug("need to read request header");
-	if ( $data =~s{( \A
-	    ([A-Z]{2,20})[\040\t]+          # method
-	    (\S+)[\040\t]+                  # path/URI
-	    HTTP/(1\.[01])[\40\t]*          # version
-	    \r?\n                           # (CR)LF
-	    ([^\r\n].*?\n)?                 # fields
-	    \r?\n                           # final (CR)LF
-	)}{}sxi ) {
+	if ($data =~s{\A(\A.*?\n\r?\n)}{}s) {
+	    $DEBUG && $self->xdebug("got request header");
 	    my $hdr = $1;
-	    $rq->{method} = uc($2);
-	    my $url = $3;
-	    my $version = $4;
-	    $rq->{info} = "\U$2\E $3 HTTP/$4";
-	    $DEBUG && $self->xdebug("got request header $rq->{info}");
-
-	    my %kv;
-	    my $bad = parse_hdrfields($5,\%kv);
-	    %TRACE && ($obj||$self)->xtrace("invalid request header data: $bad") 
-		if $bad ne '';
-
 	    my $n = length($hdr);
 	    $self->{offset}[0] += $n;
 	    $bytes += $n;
 	    $rq->{state} |= RQHDR_DONE; # rqhdr done
 
-	    my %cbargs = (
-		content_length => undef,
-		method => $rq->{method},
-		url => $url,
-		version => $version,
-		fields => \%kv,
-		$bad eq '' ? () : ( junk => $bad ),
-	    );
-	    if ($version>=1.1 and $kv{expect}) {
-		for(@{$kv{expect}}) {
-		    # ignore all but 100-continue
-		    $rq->{expect}{lc($1)} = 1 if m{\b(100-continue)\b}i
-		}
+	    my %hdr;
+	    my $err = parse_rqhdr($hdr,\%hdr);
+	    if ($err) {
+		($obj||$self)->fatal($err,0,$time);
+		$rq->{state} |= RQ_ERROR;
+		return $bytes;
 	    }
 
-	    if ( my $cl = $kv{'content-length'} ) {
-		if ( @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1 ) {
-		    ($obj||$self)->fatal(
-			"multiple different content-length header in request",
-			0,$time);
-		    $rq->{state} |= RQ_ERROR;
-		    return $bytes;
-		}
-		if ($cl->[0] !~m{^(\d+)$}) {
-		    ($obj||$self)->fatal(
-			"invalid content-length '$cl->[0]' in request",
-			0,$time);
-		    $rq->{state} |= RQ_ERROR;
-		    return $bytes;
-		}
-		$cbargs{content_length} = $rq->{rqclen} = $cl->[0];
-		$DEBUG && $self->xdebug(
-		    "set content-length to $rq->{rqclen} from header");
+	    my $body_done;
+	    if ($hdr{chunked}) {
+		$rq->{rqchunked} = 1;
+	    } elsif ($hdr{content_length}) {
+		$rq->{rqclen} = $hdr{content_length};
+		$self->{gap_upto}[0]= $self->{offset}[0] + $hdr{content_length};
+	    } else {
+		$body_done = $hdr{method} ne 'CONNECT';
 	    }
 
-	    if ( $version >= 1.1 and 
-		grep { m{(?:^|[ \t,])chunked(?:$|[ \t,;])}i }
-		    @{ $kv{'transfer-encoding'} || [] }
-	    ) {
-		$cbargs{chunked} = $rq->{rqchunked} = 1;
-		if ( defined $rq->{rqclen} ) {
-		    # RFC2616 4.4.3: if both given ignore content-length
-		    %TRACE && ($obj||$self)->xtrace(
-			"request content-length and chunked given");
-		    $rq->{rqclen} = undef;
-		}
-	    }
+	    $rq->{expect}  = $hdr{expect};
+	    $rq->{method}  = $hdr{method};
+	    $rq->{info}    = $hdr{info};
+	    $rq->{upgrade} = $hdr{upgrade};
 
-	    if ( $METHODS_WITHOUT_RQBODY{ $rq->{method} } ) {
-		if ( $rq->{rqclen} ) {
-		    ($obj||$self)->fatal(
-			"no body allowed with method $rq->{method}",0,$time);
-		    $rq->{state} |= RQ_ERROR;
-		    return $bytes;
-		}
-		# With CONNECT no data are allowed before we got the successful
-		# response. Only then rqclen will be set to undef to mark that
-		# body ends with eof.
-		$cbargs{content_length} = $rq->{rqclen} = 0;
-		$rq->{rqchunked} = undef;
+	    %TRACE && $hdr{junk} && ($obj||$self)->xtrace(
+		"invalid request header data: $hdr{junk}");
 
-	    } elsif ( $METHODS_WITH_RQBODY{ $rq->{method} } ) {
-		if ( ! defined $rq->{rqclen} && ! $rq->{rqchunked} ) {
-		    ($obj||$self)->fatal(
-			"content-length or transfer-encoding chunked must be given with method $rq->{method}",
-			0,$time);
-		    $rq->{state} |= RQ_ERROR;
-		    return $bytes;
-		}
-	    } elsif ( ! $rq->{rqchunked} ) {
-		# if not given content-length is considered 0
-		$cbargs{content_length} = $rq->{rqclen} ||= 0;
-	    }
+	    $obj && $obj->in_request_header($hdr,$time,\%hdr);
 
-	    # Connection upgrade - currently only Websocket is supported
-	    if ($version >= 1.1 and $kv{upgrade}
-		and grep m{\bWebSocket\b}i,@{$kv{upgrade}}) {
-		# Websocket: RFC6455, Sec.4.1 Page 16ff
-		my $wskey = $kv{'sec-websocket-key'} || [];
-		if (@$wskey > 1) {
-		    my %x;
-		    $wskey = [ map { $x{$_}++ ? ():($_) } @$wskey ];
-		}
-		my $v;
-		if ( @$wskey == 1
-		    and $rq->{method} eq 'GET'
-		    # RFC6455 requires Connection upgrade on client site,
-		    # while for RFC7230 it should be enough on server side.
-		    and $v = $kv{connection} and grep m{\bUPGRADE\b}i, @$v
-		    and $v = $kv{upgrade} and grep m{\bWebSocket\b}i, @$v
-		    and $v = $kv{'sec-websocket-version'}
-		    and ! grep { $_ ne '13' } @$v
-		) {
-		    $cbargs{upgrade} = $rq->{upgrade} = {
-			websocket => $wskey->[0]
-		    };
-		} else {
-		    ($obj||$self)->fatal(
-			"invalid websocket uprade request",0,$time);
-		    $rq->{state} |= RQ_ERROR;
-		    return $bytes;
-		}
-	    }
-
-	    $obj && $obj->in_request_header($hdr,$time,\%cbargs);
-
-	    if (!$rq->{rqchunked}) {
-		if (!defined($rq->{rqclen})) {
-		    $self->{gap_upto}[0] = -1; # until eof (CONNECT)
-		} elsif ($rq->{rqclen}) {
-		    $self->{gap_upto}[0] = $self->{offset}[0] + $rq->{rqclen};
-		}
-	    }
-
-	    if ( ! $rq->{rqchunked}
-		and $rq->{rqclen} == 0
-		and $rq->{method} ne 'CONNECT') {
+	    if ($body_done) {
 		$DEBUG && $self->xdebug("no content-length - request body done");
-		# no clen - body done
 		$rq->{state} |= RQBDY_DONE;
 		$obj && $obj->in_request_body('',1,$time);
 	    }
 
-	} elsif ( $data =~m{[^\n]\r?\n\r?\n}g ) {
-	    ($obj||$self)->fatal( sprintf("invalid request header syntax '%s'",
-		substr($data,0,pos($data))),0,$time);
-	    $rq->{state} |= RQ_ERROR;
-	    return $bytes;
 	} elsif ( length($data) > $self->{hdr_maxsz}[0] ) {
 	    ($obj||$self)->fatal('request header too big',0,$time);
 	    $rq->{state} |= RQ_ERROR;
@@ -1055,6 +944,101 @@ sub parse_hdrfields {
     return $bad;
 }
 
+sub parse_rqhdr {
+    my ($data,$hdr) = @_;
+    $data =~m{\A
+	([A-Z]{2,20})[\040\t]+          # $1: method
+	(\S+)[\040\t]+                  # $2: path/URI
+	HTTP/(1\.[01])[\40\t]*          # $3: version
+	\r?\n                           # (CR)LF
+	([^\r\n].*?\n)?                 # $4: fields
+	\r?\n                           # final (CR)LF
+    \Z}sx or return "invalid request header";
+
+    my $version = $3;
+    my $method  = $1;
+    %$hdr = (
+	method    => $method,
+	url       => $2,
+	version   => $version,
+	info      => "$method $2 HTTP/$version",
+	# fields  -  hash of fields
+	# junk    -  bad header fields
+	# expect  -  expectations from expect header
+	# upgrade -  { websocket => key }
+	# content_length
+	# chunked
+    );
+
+    my %kv;
+    my $bad = parse_hdrfields($4,\%kv);
+    $hdr->{junk} = $bad if $bad ne '';
+    $hdr->{fields} = \%kv;
+
+    if ($version>=1.1 and $kv{expect}) {
+	for(@{$kv{expect}}) {
+	    # ignore all but 100-continue
+	    $hdr->{expect}{lc($1)} = 1 if m{\b(100-continue)\b}i
+	}
+    }
+
+    # RFC2616 4.4.3:
+    # chunked transfer-encoding takes preferece before content-length
+    if ( $version >= 1.1 and
+	grep { m{(?:^|[ \t,])chunked(?:$|[ \t,;])}i }
+	    @{ $kv{'transfer-encoding'} || [] }
+    ) {
+	$hdr->{chunked} = 1;
+
+    } elsif ( my $cl = $kv{'content-length'} ) {
+	return "multiple different content-length header in request"
+	    if @$cl>1 and do { my %x; @x{@$cl} = (); keys(%x) } > 1;
+	return "invalid content-length '$cl->[0]' in request"
+	    if $cl->[0] !~m{^(\d+)$};
+	$hdr->{content_length} = $cl->[0];
+    }
+
+    if ( $METHODS_WITHOUT_RQBODY{$method} ) {
+	return "no body allowed with method $method"
+	    if $hdr->{content_length} or $hdr->{chunked};
+	$hdr->{content_length} = 0;
+
+    } elsif ( $METHODS_WITH_RQBODY{$method} ) {
+	return "content-length or transfer-encoding chunked must be given with method $method"
+	    if ! $hdr->{chunked} and ! defined $hdr->{content_length};
+
+    } elsif ( ! $hdr->{chunked} ) {
+	# if not given content-length is considered 0
+	$hdr->{content_length} ||= 0;
+    }
+
+    # Connection upgrade - currently only Websocket is supported
+    if ($version >= 1.1 and $kv{upgrade}
+	and grep m{\bWebSocket\b}i,@{$kv{upgrade}}) {
+	# Websocket: RFC6455, Sec.4.1 Page 16ff
+	my $wskey = $kv{'sec-websocket-key'} || [];
+	if (@$wskey > 1) {
+	    my %x;
+	    $wskey = [ map { $x{$_}++ ? ():($_) } @$wskey ];
+	}
+	my $v;
+	if ( @$wskey == 1
+	    and $method eq 'GET'
+	    # RFC6455 requires Connection upgrade on client site,
+	    # while for RFC7230 it should be enough on server side.
+	    and $v = $kv{connection} and grep m{\bUPGRADE\b}i, @$v
+	    and $v = $kv{upgrade} and grep m{\bWebSocket\b}i, @$v
+	    and $v = $kv{'sec-websocket-version'}
+	    and ! grep { $_ ne '13' } @$v
+	) {
+	    $hdr->{upgrade} = { websocket => $wskey->[0] };
+	} else {
+	    return "invalid websocket upgrade request";
+	}
+    }
+    return; # no error
+}
+
 
 sub new_request {
     my $self = shift;
@@ -1484,6 +1468,8 @@ $header is the string of the header.
 
 =item version - version of HTTP spoken in request
 
+=item info - first line of request (method url version)
+
 =item fields - (key => \@values) hash of header fields
 
 =item junk - invalid data found in header fields part
@@ -1496,6 +1482,10 @@ $header is the string of the header.
 
 Currently this hash contains the key C<websocket> with the value of the
 C<sec-websocket-key> if a valid request for a Websocket upgrade was detected.
+
+=item expect - contains hash for expectations from Expect header
+
+Currently the only possible key is C<100-continue>.
 
 =back
 
@@ -1685,7 +1675,7 @@ response body, i.e. which have an implicit and non-changeble content-length of 0
 This constant is an array reference of all response codes which will not have a
 response body, i.e. which have an implicit and non-changeble content-length of 0.
 
-=item parse_hdr_fields($header,\%fields) -> $bad_header
+=item parse_hdrfields($header,\%fields) -> $bad_lines
 
 This function parses the given message header (without request or status line!)
 and extracts the C<key:value> pairs into C<%fields>. Each key in C<%fields> is
@@ -1698,6 +1688,12 @@ Any continuation lines will be transformed into a single line.
 It will return any remaining data in C<$header> which could not be interpreted
 as proper C<key:value> pairs. If the message contains no errors it will thus
 return C<''>.
+
+=item parse_reqhdr($string,\%header) -> $bad_header
+
+This will parse the given C<$string> as a request header and extract information
+into \%header. These information then later will be given to
+C<in_request_header>. See there for more details about the contents of the hash.
 
 =back
 
