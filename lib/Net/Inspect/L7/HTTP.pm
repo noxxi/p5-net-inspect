@@ -862,7 +862,7 @@ sub parse_hdrfields {
 }
 
 sub parse_reqhdr {
-    my ($data,$hdr) = @_;
+    my ($data,$hdr,$external_length) = @_;
     $data =~m{\A
 	([A-Z]{2,20})[\040\t]+          # $1: method
 	(\S+)[\040\t]+                  # $2: path/URI
@@ -916,13 +916,15 @@ sub parse_reqhdr {
     }
 
     if ( $METHODS_WITHOUT_RQBODY{$method} ) {
-	# Ignore any kind of length information.
-	$hdr->{content_length} = 0;
-	delete $hdr->{chunked};
+	# Complain if the client announced a body.
+	return "no body allowed with $method"
+	    if $hdr->{content_length} or $hdr->{chunked};
 
     } elsif ( $METHODS_WITH_RQBODY{$method} ) {
 	return "content-length or transfer-encoding chunked must be given with method $method"
-	    if ! $hdr->{chunked} and ! defined $hdr->{content_length};
+	    if ! $hdr->{chunked}
+	    and ! defined $hdr->{content_length}
+	    and ! $external_length;
 
     } elsif ( ! $hdr->{chunked} ) {
 	# if not given content-length is considered 0
@@ -1741,11 +1743,14 @@ It will return any remaining data in C<$header> which could not be interpreted
 as proper C<key:value> pairs. If the message contains no errors it will thus
 return C<''>.
 
-=item parse_reqhdr($string,\%header) -> $bad_header
+=item parse_reqhdr($string,\%header,[$external_length]) -> $bad_header
 
 This will parse the given C<$string> as a request header and extract information
 into \%header. These information then later will be given to
 C<in_request_header>. See there for more details about the contents of the hash.
+
+If C<$external_length> is true it will not complain if a content-length is
+required but not defined.
 
 =item parse_rsphdr($string,\%request,\%header) -> $bad_header
 
