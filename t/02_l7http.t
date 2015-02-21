@@ -255,13 +255,13 @@ my @tests = (
 	gap_offset => [ 49,0 ],
 	gap_diff   => [ 10,0 ],
 	0 => [ gap => 10 ],
-	request_body => "gap,10",
+	request_body => "[gap,10]",
 	1 => "HTTP/1.0 200 Ok\r\nContent-length: 5\r\n\r\n",
 	response_header => "HTTP/1.0 200 Ok\r\nContent-length: 5\r\n\r\n",
 	gap_diff   => [ 0,5 ],
 	gap_offset => [ 0,43 ],
 	1 => [ gap => 5 ],
-	response_body => "gap,5",
+	response_body => "[gap,5]",
 
 	0 => "POST / HTTP/1.0\r\nContent-length: 8\r\n\r\n",
 	request_header => "POST / HTTP/1.0\r\nContent-length: 8\r\n\r\n",
@@ -270,14 +270,14 @@ my @tests = (
 	0 => "1234",
 	request_body => '1234',
 	0 => [ gap => 4 ],
-	request_body => "gap,4",
+	request_body => "[gap,4]",
 	1 => "HTTP/1.0 200 Ok\r\nContent-length: 4\r\n\r\n43",
 	response_header => "HTTP/1.0 200 Ok\r\nContent-length: 4\r\n\r\n",
 	response_body => '43',
 	gap_offset => [ 0,85 ],
 	gap_diff   => [ 0,2 ],
 	1 => [ gap => 2 ],
-	response_body => "gap,2",
+	response_body => "[gap,2]",
 
 	gap_diff   => [ 0,0 ],
     ],
@@ -329,11 +329,11 @@ my @tests = (
 	gap_diff => [ 0,0 ],
 
 	# first frame of data
-	0 => $ws_data0, wsdata => "0|".('first' x 1_000)."|0|init=1,mask=\x12\x34\x56\x78,opcode=2",
+	0 => $ws_data0, wsdata => "0|".('first' x 1_000)."|0|{init=1,mask=\x12\x34\x56\x78,opcode=2}",
 
 	# in between ping+pong
-	0 => $ws_ping0, wsctl => "0|foo|mask=\x78\x90\xab\xcd,opcode=9",
-	1 => $ws_pong1, wsctl => "1|bar|mask=\x89\x0a\xbc\xde,opcode=10",
+	0 => $ws_ping0, wsctl => "0|foo|{mask=\x78\x90\xab\xcd,opcode=9}",
+	1 => $ws_pong1, wsctl => "1|bar|{mask=\x89\x0a\xbc\xde,opcode=10}",
 
 	# second frame has header of 14 byte (8 byte for length)
 	0 => substr($ws_data0c,0,13), # no output should be after 13 bytes
@@ -342,45 +342,45 @@ my @tests = (
 
 	# forward first 10 bytes of payload and now expect wsdata
 	0 => substr($ws_data0c,14,10),
-	wsdata => "0|secondseco|0|mask=\x23\x45\x67\x89,opcode=2",
+	wsdata => "0|secondseco|0|{bytes_left=[0,131990],mask=\x23\x45\x67\x89,opcode=2}",
 	gap_diff => [ 131_990,0 ],
 
 	# forward slowly up to the 32-bit boundary
 	0 => [ gap => 65_524 ],  # payload: 65534
-	wsdata => "0|gap,65524|0|mask=\x23\x45\x67\x89,mask_offset=2,opcode=2",
+	wsdata => "0|[gap,65524]|0|{bytes_left=[0,66466],mask=\x23\x45\x67\x89,mask_offset=2,opcode=2}",
 	gap_diff => [ 66_466,0 ],
 	0 => [ gap => 1 ],       # payload: 65535 -> 0xffffffff
-	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,mask_offset=3,opcode=2",
+	wsdata => "0|[gap,1]|0|{bytes_left=[0,66465],mask=\x23\x45\x67\x89,mask_offset=3,opcode=2}",
 	gap_diff => [ 66_465,0 ],
 	0 => [ gap => 1 ],       # payload: 65536 -> 1 << 32
-	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,mask_offset=0,opcode=2",
+	wsdata => "0|[gap,1]|0|{bytes_left=[0,66464],mask=\x23\x45\x67\x89,mask_offset=0,opcode=2}",
 	gap_diff => [ 66_464,0 ],
 	0 => [ gap => 1 ],       # payload: 65537
-	wsdata => "0|gap,1|0|mask=\x23\x45\x67\x89,mask_offset=1,opcode=2",
+	wsdata => "0|[gap,1]|0|{bytes_left=[0,66463],mask=\x23\x45\x67\x89,mask_offset=1,opcode=2}",
 	gap_diff => [ 66_463,0 ],
 
 	# more of frame as gap
 	0 => [ gap => 66_460 ],
-	wsdata => "0|gap,66460|0|mask=\x23\x45\x67\x89,mask_offset=1,opcode=2",
+	wsdata => "0|[gap,66460]|0|{bytes_left=[0,3],mask=\x23\x45\x67\x89,mask_offset=1,opcode=2}",
 	gap_diff => [ 3,0 ],
 
 	# The last 3 octets of frame not gapped to check that the mask gets
 	# used correctly if not on mask boundary after gaps.
 	0 => substr($ws_data0c,-3),
-	wsdata => "0|ond|0|mask=\x23\x45\x67\x89,mask_offset=1,opcode=2",
+	wsdata => "0|ond|0|{mask=\x23\x45\x67\x89,mask_offset=1,opcode=2}",
 	gap_diff => [ 0,0 ],
 
 	# now we get some data from the server
-	1 => $ws_data1, wsdata => "1|fnord|1|fin=1,init=1,opcode=1",
+	1 => $ws_data1, wsdata => "1|fnord|1|{fin=1,init=1,opcode=1}",
 
 	# client closes
-	1 => $ws_close1, wsctl => '1|\x04\xd2barfoot|opcode=8,reason=barfoot,status=1234',
+	1 => $ws_close1, wsctl => '1|\x04\xd2barfoot|{opcode=8,reason=barfoot,status=1234}',
 
 	# server closes
-	0 => $ws_close0, wsctl => '0|\x10\xe1foobar|mask=\x56\x78\x90\xab,opcode=8,reason=foobar,status=4321',
+	0 => $ws_close0, wsctl => '0|\x10\xe1foobar|{mask=\x56\x78\x90\xab,opcode=8,reason=foobar,status=4321}',
 
 	# third frame from client is final frame
-	0 => $ws_data0l, wsdata => "0|lastlast|1|fin=1,mask=\x34\x56\x78\x90,opcode=2",
+	0 => $ws_data0l, wsdata => "0|lastlast|1|{fin=1,mask=\x34\x56\x78\x90,opcode=2}",
 
 	# EOF
 	0 => '', wsctl => '0||',
@@ -437,13 +437,7 @@ for( my $ti = 0;$ti<@tests;$ti++ ) {
 		die "expected $what, got no results"
 	    } else {
 		my $have = do {
-		    my @r = @{shift(@result)};
-		    for my $r (@r) {
-			$r = [ map { "$_=$r->{$_}" } sort keys %$r ]
-			    if UNIVERSAL::isa($r,'HASH');
-			$r = join(",",@$r) if UNIVERSAL::isa($r,'ARRAY');
-			$r = _escape($r);
-		    }
+		    my @r = map { _flatten($_) } @{shift(@result)};
 		    join('|',@r);
 		};
 		my $want = join('|',$what, ref($data)? @$data:$data);
@@ -460,6 +454,17 @@ for( my $ti = 0;$ti<@tests;$ti++ ) {
 	fail($desc);
 	last;
     }
+}
+
+sub _flatten {
+    my ($r,$level) = @_;
+    $level //= 0;
+    $r = "$r" if $level>3;
+    return '{'.join(",", map { "$_="._flatten($r->{$_},$level+1) } sort keys %$r ).'}'
+	if UNIVERSAL::isa($r,'HASH');
+    return '['.join(",",map { _flatten($_,$level+1) } @$r).']'
+	if UNIVERSAL::isa($r,'ARRAY');
+    return _escape($r);
 }
 
 sub _escape {

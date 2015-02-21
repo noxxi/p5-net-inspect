@@ -1208,11 +1208,18 @@ sub upgrade_websocket {
 		    $clen = undef;
 		}
 
+		if (defined $clen) {
+		    $data_frame->{bytes_left} = [$clenhi,$clen];
+		} else {
+		    delete $data_frame->{bytes_left};
+		}
 		$obj->in_wsdata($dir,$data,$eom,$time,$data_frame);
-		delete $data_frame->{init};
 		if ($eom) {
 		    $data_frame = $current_frame = undef;
 		    $self->{gap_upto}[$dir] = 0;
+		} else {
+		    delete $data_frame->{init};
+		    delete $data_frame->{header};
 		}
 		return;
 	    }
@@ -1256,11 +1263,17 @@ sub upgrade_websocket {
 		    $clen = undef;
 		}
 		if ($data_frame && $current_frame == $data_frame) {
+		    if (defined $clen) {
+			$data_frame->{bytes_left} = [$clenhi,$clen];
+		    } else {
+			delete $data_frame->{bytes_left};
+		    }
 		    $obj->in_wsdata($dir,$fwd,$eom,$time,$data_frame);
 		    if ($eom) {
 			$data_frame = undef;
 		    } else {
 			delete $data_frame->{init};
+			delete $data_frame->{header};
 			$current_frame->{mask_offset}
 			    = (($current_frame->{mask_offset}||0) + length($fwd)) % 4
 			    if defined $clen;
@@ -1373,7 +1386,7 @@ sub upgrade_websocket {
 	    }
 
 	    # done with frame header
-	    substr($rbuf,0,$off,'');
+	    $current_frame->{header} = substr($rbuf,0,$off,'');
 	    goto PARSE_DATA;
 
 	    # Done
@@ -1616,8 +1629,9 @@ This will be called after a Websocket upgrade when receiving a control frame.
 C<$dir> is 0 for data from client, 1 for data from server.
 C<$data> is the unmasked payload of the frame.
 C<$frameinfo> is a blessed hash reference which contains the C<opcode> of the
-frame and the C<mask> (binary). For a close frame it will also contain the
-extracted C<status> code and the C<reason>.
+frame, the C<mask> (binary) and C<header> for the frame header.
+For a close frame it will also contain the extracted C<status> code and the
+C<reason>.
 
 To get the unmasked payload call C<< $frameinfo->unmask($masked_data) >>.
 
@@ -1637,7 +1651,19 @@ is done and the FIN bit was set on the frame.
 C<$frameinfo> is a blessed hash reference which contains the data type as
 C<opcode>. This will be the original opcode of the starting frame in case of
 fragmented transfer. It will also contain the C<mask> (binary) of the current
-frame.
+frame. 
+
+If this is the initial part of the data (i.e. initial frame in possibly
+fragmented data and initial data inside this frame) it will also have C<init>
+set to true inside C<$frameinfo>.
+
+If there are still unread data within the frame C<$frameinfo> will contain
+C<bytes_left> as C<<[hi,low]>> where C<hi> and C<low> are the upper and lower
+32 bit parts of the number of outstanding bytes.
+
+If this call to C<in_wsdata> was caused by the start of a new frame and not
+further data in the same frame C<header> will be set to the header of this new
+frame. In all other cases C<header> is not set.
 
 To get the unmasked payload call C<< $frameinfo->unmask($masked_data) >>.
 
