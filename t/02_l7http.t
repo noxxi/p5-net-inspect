@@ -329,11 +329,11 @@ my @tests = (
 	gap_diff => [ 0,0 ],
 
 	# first frame of data
-	0 => $ws_data0, wsdata => "0|".('first' x 1_000)."|0|{init=1,mask=\x12\x34\x56\x78,opcode=2}",
+	0 => $ws_data0, wsdata => "0|".('first' x 1_000)."|0|{header=\x02\xfe\x13\x88\x12\x34\x56\x78,init=1,mask=\x12\x34\x56\x78,opcode=2}",
 
 	# in between ping+pong
-	0 => $ws_ping0, wsctl => "0|foo|{mask=\x78\x90\xab\xcd,opcode=9}",
-	1 => $ws_pong1, wsctl => "1|bar|{mask=\x89\x0a\xbc\xde,opcode=10}",
+	0 => $ws_ping0, wsctl => "0|foo|{header=\x89\x83x\x90\xab\xcd,mask=\x78\x90\xab\xcd,opcode=9}",
+	1 => $ws_pong1, wsctl => "1|bar|{header=\x8a\x83\x89\n\xbc\xde,mask=\x89\x0a\xbc\xde,opcode=10}",
 
 	# second frame has header of 14 byte (8 byte for length)
 	0 => substr($ws_data0c,0,13), # no output should be after 13 bytes
@@ -342,7 +342,7 @@ my @tests = (
 
 	# forward first 10 bytes of payload and now expect wsdata
 	0 => substr($ws_data0c,14,10),
-	wsdata => "0|secondseco|0|{bytes_left=[0,131990],mask=\x23\x45\x67\x89,opcode=2}",
+	wsdata => "0|secondseco|0|{bytes_left=[0,131990],header=\x00\xff\x00\x00\x00\x00\x00\x02\x03\xa0\x23\x45\x67\x89,mask=\x23\x45\x67\x89,opcode=2}",
 	gap_diff => [ 131_990,0 ],
 
 	# forward slowly up to the 32-bit boundary
@@ -371,16 +371,16 @@ my @tests = (
 	gap_diff => [ 0,0 ],
 
 	# now we get some data from the server
-	1 => $ws_data1, wsdata => "1|fnord|1|{fin=1,init=1,opcode=1}",
+	1 => $ws_data1, wsdata => "1|fnord|1|{fin=1,header=\x81\x05,init=1,opcode=1}",
 
 	# client closes
-	1 => $ws_close1, wsctl => '1|\x04\xd2barfoot|{opcode=8,reason=barfoot,status=1234}',
+	1 => $ws_close1, wsctl => '1|\x04\xd2barfoot|{header=\x88\x09,opcode=8,reason=barfoot,status=1234}',
 
 	# server closes
-	0 => $ws_close0, wsctl => '0|\x10\xe1foobar|{mask=\x56\x78\x90\xab,opcode=8,reason=foobar,status=4321}',
+	0 => $ws_close0, wsctl => '0|\x10\xe1foobar|{header=\x88\x88\x56\x78\x90\xab,mask=\x56\x78\x90\xab,opcode=8,reason=foobar,status=4321}',
 
 	# third frame from client is final frame
-	0 => $ws_data0l, wsdata => "0|lastlast|1|{fin=1,mask=\x34\x56\x78\x90,opcode=2}",
+	0 => $ws_data0l, wsdata => "0|lastlast|1|{fin=1,header=\x80\x88\x34\x56\x78\x90,mask=\x34\x56\x78\x90,opcode=2}",
 
 	# EOF
 	0 => '', wsctl => '0||',

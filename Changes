@@ -1,3 +1,8 @@
+0.316 2015/02/21
+- L7::HTTP 
+  - provide bytes_left and header in frameinfo of in_wsdata/in_wsctl
+  - complain again if request header contain information about non-zero body
+  -  parse_reqhdr allows to parse header w/o length info if explicitly told
 0.315 2015/02/18
 - L7::HTTP support for Websockets
 - L7::HTTP exportable function parse_reqhdr and parse_rsphdr to parse
