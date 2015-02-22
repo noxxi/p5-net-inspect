@@ -1,3 +1,6 @@
+0.316 2015/02/22
+- L7::HTTP - move websocket handling to L7::HTTP::WebSocket and implement this
+  and other upgrade handling in a more generic way.
 0.316 2015/02/21
 - L7::HTTP 
   - provide bytes_left and header in frameinfo of in_wsdata/in_wsctl

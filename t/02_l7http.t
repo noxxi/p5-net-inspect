@@ -13,6 +13,7 @@ my @result;
     # collect called hooks
     package myRequest;
     use base 'Net::Inspect::Flow';
+    use base 'Net::Inspect::L7::HTTP::WebSocket';  # upgrade_websocket etc
     sub new_request        { return bless {},ref(shift) }
     sub in_request_header  { push @result, [ 'request_header',  $_[1] ] }
     sub in_request_body    { push @result, [ 'request_body',    $_[1] ] }
