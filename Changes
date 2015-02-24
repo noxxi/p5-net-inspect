@@ -1,4 +1,13 @@
-0.316 2015/02/22
+0.318 2015/02/25
+- L7::HTTP
+  - Handle case of eof from server before sending response back in a special
+    way: if this is not the first request don't fatal but instead call
+    in_response_header with an empty header to signal this totally valid
+    server behavior (server might close any time before sending response,
+    client must retry).
+  - better debugging - debug messages include request-id relative to connection
+    and are more conistent
+0.317 2015/02/22
 - L7::HTTP - move websocket handling to L7::HTTP::WebSocket and implement this
   and other upgrade handling in a more generic way.
 0.316 2015/02/21

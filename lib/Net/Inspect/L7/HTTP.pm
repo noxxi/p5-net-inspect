@@ -7,7 +7,7 @@ use warnings;
 package Net::Inspect::L7::HTTP;
 use base 'Net::Inspect::Flow';
 use Net::Inspect::Debug qw(:DEFAULT $DEBUG %TRACE);
-use Hash::Util 'lock_keys';
+use Hash::Util 'lock_ref_keys';
 use Carp 'croak';
 use Scalar::Util 'weaken';
 use fields (
@@ -296,13 +296,13 @@ sub _in0 {
     # create new request if no open request or last open request has the
     # request body already done (pipelining)
     if ( ! @$rqs or $rqs->[0]{state} & RQBDY_DONE ) {
-	$DEBUG && $self->xdebug("create new request");
+	my $reqid = ++$self->{lastreqid};
 	my $obj = $self->new_request({
 	    %{$self->{meta}},
 	    time => $time,
-	    reqid => ++$self->{lastreqid}
+	    reqid => $reqid,
 	});
-	my %rq = (
+	my $rq = {
 	    obj      => $obj,
 	    # bitmask what is done: rpbody|rphdr|rqerror|rqbody|rqhdr
 	    state    => 0,
@@ -317,9 +317,16 @@ sub _in0 {
 	    rqchunked => undef,  # chunked mode for request
 	    rpchunked => undef,  # chunked mode for response
 	    request   => undef,  # result from parse_reqhdr
-	);
-	lock_keys(%rq);
-	unshift @$rqs, \%rq;
+	};
+	
+	if ($DEBUG) {	
+	    $rq->{reqid} = $reqid;
+	    weaken($rq->{conn} = $self);
+	    bless $rq, 'Net::Inspect::L7::HTTP::_DebugRequest';
+	    $rq->xdebug("create new request");
+	}
+	lock_ref_keys($rq);
+	unshift @$rqs, $rq;
     }
 
     my $rq = $rqs->[0];
@@ -334,9 +341,9 @@ sub _in0 {
 	    ($obj||$self)->in_junk(0,$1,0,$time);
 	}
 
-	$DEBUG && $self->xdebug("need to read request header");
+	$DEBUG && $rq->xdebug("need to read request header");
 	if ($data =~s{\A(\A.*?\n\r?\n)}{}s) {
-	    $DEBUG && $self->xdebug("got request header");
+	    $DEBUG && $rq->xdebug("got request header");
 	    my $hdr = $1;
 	    my $n = length($hdr);
 	    $self->{offset}[0] += $n;
@@ -358,7 +365,7 @@ sub _in0 {
 		$rq->{rqclen} = $hdr{content_length};
 		$self->{gap_upto}[0]= $self->{offset}[0] + $hdr{content_length};
 	    } else {
-		$body_done = $hdr{method} ne 'CONNECT';
+		$body_done = 1;
 	    }
 
 	    $rq->{request} = \%hdr;
@@ -369,11 +376,20 @@ sub _in0 {
 	    $obj && $obj->in_request_header($hdr,$time,\%hdr);
 
 	    if ($body_done) {
-		$DEBUG && $self->xdebug("no content-length - request body done");
+		$DEBUG && $rq->xdebug("request done (no body)");
 		$rq->{state} |= RQBDY_DONE;
-		$obj && $obj->in_request_body('',1,$time);
+		if ($hdr{method} ne 'CONNECT') {
+		    $obj && $obj->in_request_body('',1,$time);
+		}
 	    }
 
+	} elsif ($data =~m{[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]}) {
+	    # junk data, maybe attempt to use SOCKS instead of proxy request
+	    ($obj||$self)->fatal( sprintf(
+		"junk data instead of request header '%s...'",
+		substr($data,0,10)),0,$time);
+	    $rq->{state} |= RQ_ERROR;
+	    return $bytes;
 	} elsif ( length($data) > $self->{hdr_maxsz}[0] ) {
 	    ($obj||$self)->fatal('request header too big',0,$time);
 	    $rq->{state} |= RQ_ERROR;
@@ -384,7 +400,7 @@ sub _in0 {
 	    return $bytes;
 	} else {
 	    # will be called on new data from upper flow
-	    $DEBUG && $self->xdebug("need more bytes for request header");
+	    $DEBUG && $rq->xdebug("need more bytes for request header");
 	    return $bytes;
 	}
     }
@@ -396,12 +412,13 @@ sub _in0 {
 	    my $l = length($data);
 	    if ( $l>=$want) {
 		# got all request body
-		$DEBUG && $self->xdebug("need $want bytes, got all");
+		$DEBUG && $rq->xdebug("need $want bytes, got all");
 		my $body = substr($data,0,$rq->{rqclen},'');
 		$self->{offset}[0] += $rq->{rqclen};
 		$bytes += $rq->{rqclen};
 		$rq->{rqclen} = 0;
 		if ( ! $rq->{rqchunked} ) {
+		    $DEBUG && $rq->xdebug("request done (full clen)");
 		    $rq->{state} |= RQBDY_DONE; # req body done
 		    $obj && $obj->in_request_body($body,1,$time) 
 		} else {
@@ -410,7 +427,7 @@ sub _in0 {
 		}
 	    } else {
 		# only part
-		$DEBUG && $self->xdebug("need $want bytes, got only $l");
+		$DEBUG && $rq->xdebug("need $want bytes, got only $l");
 		my $body = substr($data,0,$l,'');
 		$self->{offset}[0] += $l;
 		$bytes += $l;
@@ -422,14 +439,14 @@ sub _in0 {
 	} else {
 	    # [2] must get CRLF after chunk
 	    if ( $rq->{rqchunked} == 2 ) {
-		$DEBUG && $self->xdebug("want CRLF after chunk");
+		$DEBUG && $rq->xdebug("want CRLF after chunk");
 		if ( $data =~m{\A\r?\n}g ) {
 		    my $n = pos($data);
 		    $self->{offset}[0] += $n;
 		    $bytes += $n;
 		    substr($data,0,$n,'');
 		    $rq->{rqchunked} = 1; # get next chunk header
-		    $DEBUG && $self->xdebug("got CRLF after chunk");
+		    $DEBUG && $rq->xdebug("got CRLF after chunk");
 		} elsif ( length($data)>=2 ) {
 		    ($obj||$self)->fatal("no CRLF after chunk",0,$time);
 		    $self->{error} = 1;
@@ -442,7 +459,7 @@ sub _in0 {
 
 	    # [1] must read chunk header
 	    if ( $rq->{rqchunked} == 1 ) {
-		$DEBUG && $self->xdebug("want chunk header");
+		$DEBUG && $rq->xdebug("want chunk header");
 		if ( $data =~m{\A([\da-fA-F]+)[ \t]*(?:;.*)?\r?\n}g ) {
 		    $rq->{rqclen} = hex($1);
 		    my $chdr = substr($data,0,pos($data),'');
@@ -453,7 +470,7 @@ sub _in0 {
 			if $rq->{rqclen};
 
 		    $obj->in_chunk_header(0,$chdr,$time) if $obj;
-		    $DEBUG && $self->xdebug(
+		    $DEBUG && $rq->xdebug(
 			"got chunk header - want $rq->{rqclen} bytes");
 		    if ( ! $rq->{rqclen} ) {
 			# last chunk
@@ -472,12 +489,12 @@ sub _in0 {
 
 	    # [3] must read chunk trailer
 	    if ( $rq->{rqchunked} == 3 ) {
-		$DEBUG && $self->xdebug("want chunk trailer");
+		$DEBUG && $rq->xdebug("want chunk trailer");
 		if ( $data =~m{\A
 		    (?:\w[\w\-]*:.*\r?\n(?:[\t\040].*\r?\n)* )*  # field:..+cont
 		    \r?\n
 		}xg) {
-		    $DEBUG && $self->xdebug("got chunk trailer");
+		    $DEBUG && $rq->xdebug("request done (chunk trailer)");
 		    my $trailer = substr($data,0,pos($data),'');
 		    $self->{offset}[0] += length($trailer);
 		    $bytes += length($trailer);
@@ -496,7 +513,7 @@ sub _in0 {
 		    return $bytes;
 		} else {
 		    # need more
-		    $DEBUG && $self->xdebug("need more bytes for chunk trailer");
+		    $DEBUG && $rq->xdebug("need more bytes for chunk trailer");
 		    return $bytes
 		}
 	    }
@@ -541,6 +558,7 @@ sub _in1 {
 	    $obj && $obj->in_response_body([ gap => $len ],$eof,$time);
 	} else {
 	    # done with request
+	    $DEBUG && $rq->xdebug("response done (last gap)");
 	    pop(@$rqs);
 	    $obj && $obj->in_response_body([ gap => $len ],1,$time);
 	}
@@ -567,15 +585,35 @@ sub _in1 {
 	if ( @$rqs && $rqs->[-1]{state} & RPBDY_DONE_ON_EOF ) {
 	    # response body done on eof
 	    my $rq = pop(@$rqs);
+	    $DEBUG && $rq->xdebug("response done (eof)");
 	    $rq->{obj}->in_response_body('',1,$time) if $rq->{obj};
-	    return $bytes;
-	}
-	if ( @$rqs ) {
+
+	} elsif ( @$rqs ) {
 	    # response body not done yet
 	    my $rq = pop(@$rqs);
-	    %TRACE && ($rq->{obj}||$self)->xtrace("response body not done but eof");
-	    ($rq->{obj}||$self)->fatal('eof but response body not done', 1,$time);
-	    return $bytes;
+	    $DEBUG && $rq->xdebug("response done (unexpected eof)");
+	    if (($rq->{state} & RPHDR_DONE) == 0) {
+		if ($data eq '' and $self->{lastreqid}>1) {
+		    # We had already a request and now the server closes while
+		    # the client is still sending a new request. This happens
+		    # with keep-alive connections and the client needs to handle
+		    # this case with retrying the request. Signal this issue by
+		    # calling in_request_header with empty header.
+		    ($rq->{obj}||$self)->in_request_header('',$time);
+		} elsif ($data eq '') {
+		    ($rq->{obj}||$self)->fatal(
+			'eof before receiving first response', 1,$time);
+		} else {
+		    %TRACE && ($rq->{obj}||$self)->xtrace(
+			"eof within response header: '$data'");
+		    ($rq->{obj}||$self)->fatal(
+			'eof within response header', 1,$time);
+		}
+	    } else {
+		# eof inside a response or close for first request already.
+		%TRACE && ($rq->{obj}||$self)->xtrace("eof within response body");
+		($rq->{obj}||$self)->fatal('eof within response body', 1,$time);
+	    }
 	}
 
 	return $bytes; # done
@@ -599,7 +637,7 @@ sub _in1 {
 
     # read response header if not done
     if ( not $rq->{state} & RPHDR_DONE ) {
-	$DEBUG && $self->xdebug("response header not read yet");
+	$DEBUG && $rq->xdebug("response header not read yet");
 
 	# leading newlines at beginning of response are legally ignored junk
 	if ( $data =~s{\A([\r\n]+)}{} ) {
@@ -617,7 +655,7 @@ sub _in1 {
 	    my $err = parse_rsphdr($hdr,$rq->{request},\%hdr);
 
 	    goto error if $err;
-	    $DEBUG && $self->xdebug("got response header");
+	    $DEBUG && $rq->xdebug("got response header");
 
 	    %TRACE && $hdr{junk} && ($obj||$self)->xtrace(
 		"invalid request header data: $hdr{junk}");
@@ -701,17 +739,23 @@ sub _in1 {
 	    done:
 	    $obj && $obj->in_response_header($hdr,$time,\%hdr);
 	    if ($body_done) {
-		$DEBUG && $self->xdebug("no response body");
+		$DEBUG && $rq->xdebug("response done (no body)");
 		pop(@$rqs);
 		$obj && $obj->in_response_body('',1,$time);
 	    }
 	    goto READ_DATA;
 
-	    error:
-	    $self->{error} = 1;
-	    ($obj||$self)->fatal($err,1,$time);
-	    return $bytes;
+		error:
+		$self->{error} = 1;
+		($obj||$self)->fatal($err,1,$time);
+		return $bytes;
 
+	} elsif ($data =~m{[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]}) {
+	    ($obj||$self)->fatal( sprintf(
+		"junk data instead of response header '%s...'",
+		substr($data,0,10)) ,1,$time);
+	    $self->{error} = 1;
+	    return $bytes;
 	} elsif ( $data =~m{[^\n]\r?\n\r?\n}g ) {
 	    ($obj||$self)->fatal( sprintf("invalid response header syntax '%s'",
 		substr($data,0,pos($data))),1,$time);
@@ -727,7 +771,7 @@ sub _in1 {
 	    return $bytes;
 	} else {
 	    # will be called on new data from upper flow
-	    $DEBUG && $self->xdebug("need more data for response header");
+	    $DEBUG && $rq->xdebug("need more data for response header");
 	    return $bytes;
 	}
     }
@@ -735,7 +779,7 @@ sub _in1 {
     # read response body
     if ( $data ne '' ) {
 	# response body
-	$DEBUG && $self->xdebug("response body data");
+	$DEBUG && $rq->xdebug("response body data");
 
 	# have content-length or within chunk
 	if ( my $want = $rq->{rpclen} ) {
@@ -743,15 +787,16 @@ sub _in1 {
 	    # with known length
 	    my $l = length($data);
 	    if ( $l >= $want ) {
-		$DEBUG && $self->xdebug("need $want bytes, got all($l)");
+		$DEBUG && $rq->xdebug("need $want bytes, got all($l)");
 		# got all response body
 		my $body = substr($data,0,$want,'');
 		$self->{offset}[1] += $want;
 		$bytes += $want;
 		$rq->{rpclen} = 0;
 		if ( ! $rq->{rpchunked} ) {
-		    # request done
+		    # response done
 		    pop(@$rqs);
+		    $DEBUG && $rq->xdebug("response done (full clen received)");
 		    $obj && $obj->in_response_body($body,1,$time);
 		} else {
 		    $obj->in_response_body($body,0,$time) if $obj;
@@ -759,7 +804,7 @@ sub _in1 {
 		}
 	    } else {
 		# only part
-		$DEBUG && $self->xdebug("need $want bytes, got only $l");
+		$DEBUG && $rq->xdebug("need $want bytes, got only $l");
 		my $body = substr($data,0,$l,'');
 		$self->{offset}[1] += $l;
 		$bytes += $l;
@@ -769,10 +814,14 @@ sub _in1 {
 
 	# no content-length, no chunk: must read until eof
 	} elsif ( $rq->{state} & RPBDY_DONE_ON_EOF ) {
-	    $DEBUG && $self->xdebug("read until eof");
+	    $DEBUG && $rq->xdebug("read until eof");
 	    $self->{offset}[1] += length($data);
 	    $bytes += length($data);
-	    pop(@$rqs) if $eof; # request done
+	    if ($eof) {
+		# response done
+		pop(@$rqs);
+		$DEBUG && $rq->xdebug("response done (eof)");
+	    }
 	    $obj->in_response_body($data,$eof,$time) if $obj;
 	    $data = '';
 	    return $bytes;
@@ -784,14 +833,14 @@ sub _in1 {
 	} else {
 	    # [2] must get CRLF after chunk
 	    if ( $rq->{rpchunked} == 2 ) {
-		$DEBUG && $self->xdebug("want CRLF after chunk");
+		$DEBUG && $rq->xdebug("want CRLF after chunk");
 		if ( $data =~m{\A\r?\n}g ) {
 		    my $n = pos($data);
 		    $self->{offset}[1] += $n;
 		    $bytes += $n;
 		    substr($data,0,$n,'');
 		    $rq->{rpchunked} = 1; # get next chunk header
-		    $DEBUG && $self->xdebug("got CRLF after chunk");
+		    $DEBUG && $rq->xdebug("got CRLF after chunk");
 		} elsif ( length($data)>=2 ) {
 		    ($obj||$self)->fatal("no CRLF after chunk",1,$time);
 		    $self->{error} = 1;
@@ -804,7 +853,7 @@ sub _in1 {
 
 	    # [1] must read chunk header
 	    if ( $rq->{rpchunked} == 1 ) {
-		$DEBUG && $self->xdebug("want chunk header");
+		$DEBUG && $rq->xdebug("want chunk header");
 		if ( $data =~m{\A([\da-fA-F]+)[ \t]*(?:;.*)?\r?\n}g ) {
 		    $rq->{rpclen} = hex($1);
 		    my $chdr = substr($data,0,pos($data),'');
@@ -814,7 +863,7 @@ sub _in1 {
 			if $rq->{rpclen};
 
 		    $obj->in_chunk_header(1,$chdr,$time) if $obj;
-		    $DEBUG && $self->xdebug(
+		    $DEBUG && $rq->xdebug(
 			"got chunk header - want $rq->{rpclen} bytes");
 		    if ( ! $rq->{rpclen} ) {
 			# last chunk
@@ -833,17 +882,17 @@ sub _in1 {
 
 	    # [3] must read chunk trailer
 	    if ( $rq->{rpchunked} == 3 ) {
-		$DEBUG && $self->xdebug("want chunk trailer");
+		$DEBUG && $rq->xdebug("want chunk trailer");
 		if ( $data =~m{\A
 		    (?:\w[\w\-]*:.*\r?\n(?:[\t\040].*\r?\n)* )*  # field:..+cont
 		    \r?\n
 		}xg) {
-		    $DEBUG && $self->xdebug("got chunk trailer");
+		    $DEBUG && $rq->xdebug("response done (chunk trailer)");
 		    my $trailer = substr($data,0,pos($data),'');
 		    $self->{offset}[1] += length($trailer);
 		    $bytes += length($trailer);
 		    $obj->in_chunk_trailer(1,$trailer,$time) if $obj;
-		    pop(@$rqs); # request done
+		    pop(@$rqs); # done
 		} elsif ( $data =~m{\n\r?\n} or 
 		    length($data)>$self->{hdr_maxsz}[2] ) {
 		    ($obj||$self)->fatal("invalid chunk trailer",1,$time);
@@ -851,7 +900,7 @@ sub _in1 {
 		    return $bytes;
 		} else {
 		    # need more
-		    $DEBUG && $self->xdebug("need more bytes for chunk trailer");
+		    $DEBUG && $rq->xdebug("need more bytes for chunk trailer");
 		    return $bytes
 		}
 	    }
@@ -1112,6 +1161,16 @@ sub dump_state {
 }
 
 
+{
+    package Net::Inspect::L7::HTTP::_DebugRequest;
+    sub xdebug {
+	my $rq = shift;
+	my $msg = shift;
+	unshift @_, $rq->{conn}, "#$rq->{reqid} $msg";
+	goto &Net::Inspect::L7::HTTP::xdebug;
+    }
+}
+
 1;
 
 __END__
@@ -1229,6 +1288,10 @@ Called when the full response header is read.
 $header is the string of the header.
 
 %hdr_meta contains information extracted from the header:
+
+If a keep-alive connection was closed by the server after the request was
+transmitted but after the response header was sent this function is called once
+with an empty header to signal this (normal) condition.
 
 =over 8
 
