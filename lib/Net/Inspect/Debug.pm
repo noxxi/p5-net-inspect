@@ -19,23 +19,23 @@ sub import {
     # extract var => \$var from import and alias it to DEBUG
     # extract sub => \$code and set $DEBUG_SUB
     for(my $i=1;$i<@_;$i++) {
-        if ( $_[$i] eq 'var' ) {
-            *DEBUG = $_[$i+1];
-            splice(@_,$i,2);
-            $i-=2;
-        } elsif ( $_[$i] eq 'sub' ) {
-            $DEBUG_SUB = $_[$i+1];
-            splice(@_,$i,2);
-            $i-=2;
-        } elsif ( $_[$i] eq 'output' ) {
-            $OUTPUT_SUB = $_[$i+1];
-            splice(@_,$i,2);
-            $i-=2;
+	if ( $_[$i] eq 'var' ) {
+	    *DEBUG = $_[$i+1];
+	    splice(@_,$i,2);
+	    $i-=2;
+	} elsif ( $_[$i] eq 'sub' ) {
+	    $DEBUG_SUB = $_[$i+1];
+	    splice(@_,$i,2);
+	    $i-=2;
+	} elsif ( $_[$i] eq 'output' ) {
+	    $OUTPUT_SUB = $_[$i+1];
+	    splice(@_,$i,2);
+	    $i-=2;
 	} elsif ( $_[$i] =~m{^(?:debug)?(\d+)$} ) {
 	    $DEBUG = $1;
 	    splice(@_,$i,1);
 	    $i--;
-        }
+	}
     }
 
     # call Exporter only if we have remaining args, because we don't
@@ -49,19 +49,19 @@ sub debug {
     my $msg = shift;
     $msg = do { no warnings; sprintf($msg,@_) } if @_;
     if ( $DEBUG_SUB ) {
-        @_ = ($msg);
-        # goto foreign debug sub
-        # if DEBUG_RX is set this will be done later
-        goto &$DEBUG_SUB if ! $DEBUG_RX;
+	@_ = ($msg);
+	# goto foreign debug sub
+	# if DEBUG_RX is set this will be done later
+	goto &$DEBUG_SUB if ! $DEBUG_RX;
     }
 
     my ($pkg,$line) = (caller(0))[0,2];
     if ( $DEBUG_RX ) {
-        $pkg ||= 'main';
-        # does not match wanted package
-        return if $pkg !~ $DEBUG_RX;
-        # goto foreign debug sub
-        goto &$DEBUG_SUB if $DEBUG_SUB;
+	$pkg ||= 'main';
+	# does not match wanted package
+	return if $pkg !~ $DEBUG_RX;
+	# goto foreign debug sub
+	goto &$DEBUG_SUB if $DEBUG_SUB;
     }
 
     my $sub = (caller(1))[3];

@@ -18,13 +18,13 @@ use fields (
     'upgrade',  # true if got upgrade, CONNECT, WebSockets..
     'connid',   # connection id
     'lastreqid',# id of last request
-    'offset',   # offset in data stream 
+    'offset',   # offset in data stream
     'gap_upto', # up to which offset we could manage a gap, that is where we
 		# only get body data (no header, chunked info..).
 		# [off,off] similar to offset and off is set to -1 if umlimited
 		# (i.e. body ends with end of file)
     'hdr_maxsz',# maximum header size for request(0), response(1) and
-                # chunk header(2). Defaults to 64k, 16k and 2k.
+		# chunk header(2). Defaults to 64k, 16k and 2k.
 );
 
 use Exporter 'import';
@@ -318,8 +318,8 @@ sub _in0 {
 	    rpchunked => undef,  # chunked mode for response
 	    request   => undef,  # result from parse_reqhdr
 	};
-	
-	if ($DEBUG) {	
+
+	if ($DEBUG) {
 	    $rq->{reqid} = $reqid;
 	    weaken($rq->{conn} = $self);
 	    bless $rq, 'Net::Inspect::L7::HTTP::_DebugRequest';
@@ -420,7 +420,7 @@ sub _in0 {
 		if ( ! $rq->{rqchunked} ) {
 		    $DEBUG && $rq->xdebug("request done (full clen)");
 		    $rq->{state} |= RQBDY_DONE; # req body done
-		    $obj && $obj->in_request_body($body,1,$time) 
+		    $obj && $obj->in_request_body($body,1,$time)
 		} else {
 		    $obj && $obj->in_request_body($body,$eof,$time);
 		    $rq->{rqchunked} = 2; # get CRLF after chunk
@@ -500,7 +500,7 @@ sub _in0 {
 		    $bytes += length($trailer);
 		    $obj->in_chunk_trailer(0,$trailer,$time) if $obj;
 		    $rq->{state} |= RQBDY_DONE; # request done
-		} elsif ( $data =~m{\n\r?\n} 
+		} elsif ( $data =~m{\n\r?\n}
 		    or length($data) > $self->{hdr_maxsz}[2] ) {
 		    ($obj||$self)->fatal("invalid chunk trailer",0,$time);
 		    $self->{error} = 1;
@@ -893,7 +893,7 @@ sub _in1 {
 		    $bytes += length($trailer);
 		    $obj->in_chunk_trailer(1,$trailer,$time) if $obj;
 		    pop(@$rqs); # done
-		} elsif ( $data =~m{\n\r?\n} or 
+		} elsif ( $data =~m{\n\r?\n} or
 		    length($data)>$self->{hdr_maxsz}[2] ) {
 		    ($obj||$self)->fatal("invalid chunk trailer",1,$time);
 		    $self->{error} = 1;
@@ -919,20 +919,20 @@ sub parse_hdrfields {
     while ( $hdr =~m{\G$token_value_cont}gc ) {
 	if ($3 eq '') {
 	    # no continuation line
-            push @{$fields->{ lc($1) }},$2;
+	    push @{$fields->{ lc($1) }},$2;
 	} else {
 	    # with continuation line
-            my ($k,$v) = ($1,$2.$3);
+	    my ($k,$v) = ($1,$2.$3);
 	    # <space>value-part<space> -> ' ' + value-part
 	    $v =~s{[\r\n]+[ \t](.*?)[ \t]*}{ $1}g;
-            push @{$fields->{ lc($k) }},$v;
+	    push @{$fields->{ lc($k) }},$v;
 	}
     }
     if (pos($hdr)//0 != length($hdr)) {
-        # bad line inside
+	# bad line inside
 	substr($hdr,0,pos($hdr)//0,'');
-        $bad .= $1 if $hdr =~s{\A([^\n]*)\n}{};
-        goto parse;
+	$bad .= $1 if $hdr =~s{\A([^\n]*)\n}{};
+	goto parse;
     }
     return $bad;
 }
@@ -1118,7 +1118,7 @@ sub new_request {
 sub open_requests {
     my $self = shift;
     my @rq = @_ ? @{$self->{requests}}[@_] : @{$self->{requests}};
-    return wantarray 
+    return wantarray
 	? map { $_->{obj} ? ($_->{obj}):() } @rq
 	: 0 + @rq;
 }
@@ -1203,7 +1203,7 @@ Hooks provided:
 
 =item guess_protocol($guess,$dir,$data,$eof,$time,$meta)
 
-=item new_connection($meta,%args) 
+=item new_connection($meta,%args)
 
 This returns an object for the connection.
 With C<$args{header_maxsize}> the maximum size of the message headers can be
@@ -1221,11 +1221,11 @@ Any data not processed must be sent again with the next call.
 C<$data> are the data as string.
 In some cases $data can be C<< [ 'gap' => $len ] >>, e.g. only the information,
 that there would be C<$len> bytes of data w/o submitting the data. These
-should only be submitted in request and response bodies and only if the 
-attached layer can handle these gaps in the C<in_request_body> and 
-C<in_response_body> methods. 
+should only be submitted in request and response bodies and only if the
+attached layer can handle these gaps in the C<in_request_body> and
+C<in_response_body> methods.
 
-Gaps on other places are not allowed, because all other data are needed 
+Gaps on other places are not allowed, because all other data are needed
 for interpreting the placement of request, response and data inside the
 connection.
 
@@ -1364,7 +1364,7 @@ C<$dir> is 0 for data from client, 1 for data from server.
 
 =item $request->in_junk($dir,$data,$eof,$time)
 
-Will be called for legally ignored junk (empty lines) in front of request or 
+Will be called for legally ignored junk (empty lines) in front of request or
 response body.  C<$dir> is 0 for data from client, 1 for data from server.
 
 =item $request->fatal($reason,$dir,$time)
@@ -1516,4 +1516,3 @@ C<method>, C<expect> and C<upgrade> must be provided because they are needed to
 interpret the response correctly.
 
 =back
-

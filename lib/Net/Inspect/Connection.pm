@@ -25,7 +25,7 @@ Net::Inspect::Connection - base class for connections
     sub in {
 	my ($self,$dir,$data,$eof,$time) = @_;
 	# expire after 2 hours inactivity
-	$self->{expire} = $time + 7200; 
+	$self->{expire} = $time + 7200;
 	...
     }
 
@@ -38,4 +38,3 @@ time, when the connection can expire, even if not explicitly closed.
 It provides a function which will be regularly called from Net::Inspect::L4::TCP
 and Net::Inspect::L4::UDP on all known connections and if it returns true
 the connection will be deleted.
-

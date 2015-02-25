@@ -38,7 +38,7 @@ sub guess_protocol {
 	    goto not_me if $ver != 0; # no socks4 reply
 
 	    # FIXME - what should we do if status not success?
-	    goto not_me if $status != 90; 
+	    goto not_me if $status != 90;
 
 
 	    # looks like socks4
@@ -55,7 +55,7 @@ sub guess_protocol {
     return;
 }
 
-sub in { 
+sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
     return length($data) if $self->{error};
 
@@ -65,9 +65,9 @@ sub in {
 	if ( $dir == 0 ) {
 	    if ( ! $self->{sockshdr} ) {
 		goto need_more if length($data)<9; # incomplete socks4 header
-		my ($ver,$conn,$port,$ip) = 
+		my ($ver,$conn,$port,$ip) =
 		    unpack('CCna4',substr($data,0,8,''));
-		return $self->fatal("only version 4 supported, version=$ver") 
+		return $self->fatal("only version 4 supported, version=$ver")
 		    if $ver != 4;
 		return $self->fatal("only connect supported") if ! $conn;
 
@@ -81,9 +81,9 @@ sub in {
 		my $user = substr($data,0,$null+1,'');
 		$bytes += 8 + $null + 1;
 
-		$self->{sockshdr} = { 
+		$self->{sockshdr} = {
 		    daddr => inet_ntoa($ip),
-		    dport => $port, 
+		    dport => $port,
 		    socks_user => $user,
 		    replay0 => [],
 		};
@@ -104,7 +104,7 @@ sub in {
 	    my $r0 = delete $self->{sockshdr}{replay0};
 	    if ( $status == 90 ) {
 		# successful connect
-		$self->{fwd} = $self->{upper_flow}->new_connection({ 
+		$self->{fwd} = $self->{upper_flow}->new_connection({
 		    %{$self->{meta}},
 		    %{$self->{sockshdr}},
 		});
@@ -130,7 +130,7 @@ sub in {
 }
 
 
-sub new_connection { 
+sub new_connection {
     my ($self,$meta) = @_;
     my $obj = $self->new;
     $obj->{meta} = $meta;
@@ -159,7 +159,7 @@ package Net::Inspect::L5::Socks::IgnoreConnection;
 {
     my $singleton;
     sub new { return $singleton ||= bless {},shift }
-    sub in { 
+    sub in {
 	my ($self,$dir,$data) = @_;
 	return length($data);
     }
@@ -171,7 +171,7 @@ use base 'Net::Inspect::L5::Socks';
 {
     my $singleton;
     sub new { return $singleton ||= bless {},shift }
-    sub in { 
+    sub in {
 	my ($self,$dir,$data) = @_;
 	return $self->fatal("unexpected data in connection with socks error")
 	    if $data ne '';
