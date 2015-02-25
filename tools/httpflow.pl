@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use Getopt::Long qw(:config posix_default bundling);
-use Net::Pcap qw(:functions);
+use Net::Pcap;
 
 # use private include path based on script path
 BEGIN { 
@@ -108,13 +108,13 @@ for my $infile (@infile ? @infile : undef ) {
     # ------------------------------------------------------------------------ 
     my $err;
     my $pcap = $infile
-	? pcap_open_offline($infile,\$err)
-	: pcap_open_live($dev,2**16,!$nopromisc,0,\$err);
+	? Net::Pcap::pcap_open_offline($infile,\$err)
+	: Net::Pcap::pcap_open_live($dev,2**16,!$nopromisc,0,\$err);
     $pcap or die $err;
     if ( $pcapfilter ) {
-	pcap_compile($pcap, \(my $compiled), $pcapfilter,0,0xffffffff) == 0
+	Net::Pcap::pcap_compile($pcap, \(my $compiled), $pcapfilter,0,0xffffffff) == 0
 	    or die "bad filter '$pcapfilter'";
-	pcap_setfilter($pcap,$compiled) == 0 or die "pcap_setfilter failed";
+	Net::Pcap::pcap_setfilter($pcap,$compiled) == 0 or die "pcap_setfilter failed";
     }
 
     # ------------------------------------------------------------------------ 
@@ -162,7 +162,7 @@ for my $infile (@infile ? @infile : undef ) {
     # pcap loop
     # ------------------------------------------------------------------------ 
     my $time;
-    pcap_loop($pcap,-1,sub {
+    Net::Pcap::pcap_loop($pcap,-1,sub {
 	my (undef,$hdr,$data) = @_;
 	if ( ! $time || $hdr->{tv_sec}-$time>10 ) {
 	    $tcp->expire($time = $hdr->{tv_sec});
