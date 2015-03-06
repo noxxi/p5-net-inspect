@@ -325,7 +325,7 @@ my @tests = (
     my $ws_pong1  = $wsframe->(0xa,1,0x890abcde,"bar");
 
     push @tests, [ 'websocket',
-	0 => $wsreq, request_header => $wsreq, request_body => '',
+	0 => $wsreq, request_header => $wsreq,
 	1 => $wsrsp, response_header => $wsrsp,
 	gap_diff => [ 0,0 ],
 

@@ -378,7 +378,12 @@ sub _in0 {
 	    if ($body_done) {
 		$DEBUG && $rq->xdebug("request done (no body)");
 		$rq->{state} |= RQBDY_DONE;
-		if ($hdr{method} ne 'CONNECT') {
+		if ($hdr{method} eq 'CONNECT' || $hdr{upgrade}) {
+		    # Don't propagate an empty request body:
+		    # with CONNECT there will be no body and with Upgrade we
+		    # will have no body if the upgrade succeeded. If it failed
+		    # we submit the body later.
+		} else {
 		    $obj && $obj->in_request_body('',1,$time);
 		}
 	    }
@@ -717,6 +722,10 @@ sub _in1 {
 		}
 
 		goto done;
+	    } elsif ($rq->{request}{upgrade}) {
+		# The client requested an upgrade which the server did not ack.
+		# Thus propagate the empty request body now.
+		$obj && $obj->in_request_body('',1,$time);
 	    }
 
 	    my $body_done;
@@ -1321,7 +1330,9 @@ Called for a chunk of data of the request body.
 $eobody is true if this is the last chunk of the request body.
 If the request body is empty the method will be called once with C<''>.
 This function will not be called for CONNECT requests because these are
-special.
+special. It will also not called be on Upgrade requests if the upgrade
+succeeds. Since this is only known once we got the response the call will be
+deferred in this case.
 
 $data can be C<< [ 'gap' => $len ] >> if the input to this
 layer were gaps.
@@ -1394,8 +1405,8 @@ If defined wantarray it will return a message, otherwise output it via xdebug
 
 =item $connection->offset(@dir)
 
-returns the current offset(s) in the data stream, that is the position
-behind the within the in_* methods forwarded data.
+Returns the current offset(s) in the data stream, that is the position
+behind the data when calling the in_* methods.
 
 =item $connection->gap_offset(@dir)
 

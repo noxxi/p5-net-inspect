@@ -262,8 +262,12 @@ sub upgrade_websocket {
 		    $err = "data frame after close";
 		    goto bad;
 		}
+		if ($data_frame) {
+		    $err = "new data message before end of previous message";
+		    goto bad;
+		}
 		$current_frame = $data_frame
-		    ||= Net::Inspect::L7::HTTP::WebSocket::_WSFrame->new;
+		    = Net::Inspect::L7::HTTP::WebSocket::_WSFrame->new;
 		%$current_frame = (
 		    opcode => $opcode,
 		    $fin ? ( fin => 1 ):(),
