@@ -339,11 +339,12 @@ my @tests = (
 	# second frame has header of 14 byte (8 byte for length)
 	0 => substr($ws_data0c,0,13), # no output should be after 13 bytes
 	0 => substr($ws_data0c,13,1), # add another one for full header
+	wsdata => "0||0|{bytes_left=[0,132000],header=\x00\xff\x00\x00\x00\x00\x00\x02\x03\xa0\x23\x45\x67\x89,mask=\x23\x45\x67\x89,opcode=2}",
 	gap_diff => [ 132_000,0 ],     # full payload can be gapped
 
 	# forward first 10 bytes of payload and now expect wsdata
 	0 => substr($ws_data0c,14,10),
-	wsdata => "0|secondseco|0|{bytes_left=[0,131990],header=\x00\xff\x00\x00\x00\x00\x00\x02\x03\xa0\x23\x45\x67\x89,mask=\x23\x45\x67\x89,opcode=2}",
+	wsdata => "0|secondseco|0|{bytes_left=[0,131990],mask=\x23\x45\x67\x89,mask_offset=0,opcode=2}",
 	gap_diff => [ 131_990,0 ],
 
 	# forward slowly up to the 32-bit boundary

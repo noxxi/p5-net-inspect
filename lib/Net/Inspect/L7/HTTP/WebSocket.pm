@@ -132,8 +132,7 @@ sub upgrade_websocket {
 	    ############################################################
 	    if (defined $clen) {
 		my $size = length($rbuf);
-		if (!$size and $clen || $clenhi) {
-		    goto done if ! $eof;
+		if (!$size and $clen || $clenhi and $eof) {
 		    $err = "eof inside websocket frame";
 		    goto bad;
 		}
@@ -179,7 +178,10 @@ sub upgrade_websocket {
 			    if defined $clen;
 		    }
 		} else {
+		    # Control frames are read in full and we make sure about
+		    # this when reading the header already.
 		    die "expected to read full control frame" if defined $clen;
+
 		    if ($current_frame->{opcode} == 0x8) {
 			# extract status + reason for close
 			if ($fwd eq '') {
@@ -201,6 +203,7 @@ sub upgrade_websocket {
 
 	    # start of new frame: read frame header
 	    ############################################################
+	    goto done if $eof;
 	    goto hdr_need_more if length($rbuf)<2;
 
 	    (my $flags,$clen) = unpack("CC",$rbuf);
@@ -298,19 +301,23 @@ sub upgrade_websocket {
 
 	    hdr_need_more:
 	    $clen = undef; # re-read from start if frame next time
+	    return;
 
 	    done:
-	    if (defined $clen) {
-		# Processed all inside rbuf we want more (data frame)
-		$conn->set_gap_diff($dir,
+	    if ($eof) {
+		# forward eof as special wsctl with no frame
+		# FIXME: complain if we have eof but the current frame is not
+		# done yet.
+		$self->in_wsctl($dir,'',$time);
+	    } elsif (defined $clen) {
+		# We have at least the header of a data frame (control frames
+		# are read as a single entity) and might need more data
+		# (clen>0). Set gap_diff.
+		$clen>0 and $conn->set_gap_diff($dir,
 		    ! $clenhi ? $clen :           # len <=32 bit
 		    1 << 32 == 1 ? 0xffffffff :   # maxint on 32-bit platform
 		    ($clenhi << 32) + $clen       # full 64 bit
 		);
-	    }
-	    if ($eof) {
-		# forward eof as special wsctl with no frame
-		$self->in_wsctl($dir,'',$time);
 	    }
 	    return;
 

@@ -1,5 +1,8 @@
+0.320 2015/03/07
+- L7::HTTP - make sure in_wsdata is called when only data frame header is
+  received.
 0.319 2015/03/06
-- L7::HHTP - defer forwarding of empty request body on upgrade requests until we
+- L7::HTTP - defer forwarding of empty request body on upgrade requests until we
   know that the server does not want to upgrade and instead continue with normal
   HTTP. Do not call in_request_body if upgrade succeeded.
 0.318 2015/02/25
