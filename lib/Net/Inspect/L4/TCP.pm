@@ -22,6 +22,20 @@ use Net::Inspect::Debug qw( debug trace );
 #        \@buf - ordered data which are not yet forwarded to attached flows [pkt,time]
 #        $state - bitmask ( 0b0000FfSs : Fin+ack|Fin|Syn+ack|Syn)
 
+use constant {
+    D_SN    => 0,
+    D_OPKT  => 1,
+    D_BUF   => 2,
+    D_STATE => 3,
+
+    C_DIR0  => 0,
+    C_DIR1  => 1,
+    C_OBJ   => 2,
+
+    P_DATA  => 0,
+    P_TIME  => 1,
+};
+
 sub new {
     my ($class,$flow) = @_;
     my $self = $class->SUPER::new($flow);
@@ -65,13 +79,13 @@ sub pktin {
     if ( $conn = $self->{conn}{$saddr,$sport,$daddr,$dport} ) {
 	$dir = 0;
 	debug("found conn $conn $saddr.$sport(%04b) -> $daddr.$dport(%04b)",
-	    $conn->[0][3],$conn->[1][3] );
+	    $conn->[C_DIR0][D_STATE],$conn->[C_DIR1][D_STATE] );
     } elsif ( $conn = $self->{conn}{$daddr,$dport,$saddr,$sport} ) {
 	$dir = 1;
 	# saddr should point to client all time..
 	($saddr,$sport,$daddr,$dport) = ($daddr,$dport,$saddr,$sport);
 	debug("found conn $conn $saddr.$sport(%04b) <- $daddr.$dport(%04b)",
-	    $conn->[0][3],$conn->[1][3] );
+	    $conn->[C_DIR0][D_STATE],$conn->[C_DIR1][D_STATE] );
     } else {
 	$dir = 0
     }
@@ -85,7 +99,7 @@ sub pktin {
 	}
 
 	debug("SYN($dir) for new flow $saddr.$sport -> $daddr.$dport");
-	if ( $conn and $conn->[$dir][3] & 0b0001 ) {
+	if ( $conn and $conn->[$dir][D_STATE] & 0b0001 ) {
 	    # SYN already received, duplicate?
 	    trace("duplicate SYN($dir) for connection $saddr.$sport -> $daddr.$dport - ignoring");
 	    return 1;
@@ -109,15 +123,19 @@ sub pktin {
 
 	# dok for structure see top of file
 	if ( ! $conn ) {
-	    $conn = [ [ undef,{},[],0], [ undef,{},[],0], undef ];
+	    $conn = [ 
+		[ undef,{},[],0],  # C_DIR0: D_SN, D_OPKT, D_BUF, D_STATE
+		[ undef,{},[],0],  # C_DIR1: D_SN, D_OPKT, D_BUF, D_STATE
+		undef              # C_OBJ
+	    ];
 	    # register new connection
 	    debug("register conn $saddr.$sport -> $daddr.$dport $conn");
 	    $self->{conn}{$saddr,$sport,$daddr,$dport} = $conn;
 	}
 
 	# set ISN and state for direction
-	$conn->[$dir][0] = $sn+1;
-	$conn->[$dir][3] = 0b0001;
+	$conn->[$dir][D_SN] = $sn+1;
+	$conn->[$dir][D_STATE] = 0b0001;
     }
 
     # must have $conn here or ignore packet
@@ -128,17 +146,18 @@ sub pktin {
 
     if ( $buf ne '' or $fin ) {
 
-	# add buf to packets
-	$conn->[$dir][1]{$sn} = [$buf,$meta->{time}] if $buf ne '';
+	# add buf to packets         P_DATA,P_TIME
+	$conn->[$dir][D_OPKT]{$sn} = [$buf,$meta->{time}] if $buf ne '';
 
 	# set FIN flag - no more data expected from peer after this point
 	# but outstanding packets might still come in
 	if ( $fin ) {
-	    if ( not $conn->[$dir][3] & 0b0100 ) {
+	    if ( not $conn->[$dir][D_STATE] & 0b0100 ) {
 		debug("shutdown dir $dir $saddr.$sport -> $daddr.$dport");
-		$conn->[$dir][3] |= 0b0100; # fin received
+		$conn->[$dir][D_STATE] |= 0b0100; # fin received
 		# must increase sn for ACK
-		$conn->[$dir][1]{ ( $sn+length($buf) ) % 2**32  } = [ '',$meta->{time} ];
+		$conn->[$dir][D_OPKT]{ ( $sn+length($buf) ) % 2**32  } 
+		    = [ '',$meta->{time} ];
 	    } else {
 		# probably duplicate
 		debug("ignore duplicate FIN($dir) $saddr.$sport -> $daddr.$dport");
@@ -152,41 +171,56 @@ sub pktin {
 
 	# reorder and concat packets up to acknowledged value and forward
 	# to attached flows
-	my $pkts = $conn->[$odir][1];
+	my $pkts = $conn->[$odir][D_OPKT];
 	my $eof = 0;
 	if ( %$pkts ) {
-	    my $xsn  = $conn->[$odir][0];
-	    my $obuf = $conn->[$odir][2];
+	    my $xsn  = $conn->[$odir][D_SN];
+	    my $obuf = $conn->[$odir][D_BUF];
 	    while ( $xsn != $asn and $pkts->{$xsn} ) {
 		my $pkt = delete $pkts->{$xsn};
-		# merge packets which came later but are earlier in the stream
-		# into $pkt
-		if ( @$obuf && $obuf->[-1][1] >= $pkt->[1] ) {
-		    # merge with existing entry
-		    $obuf->[-1][0] .= $pkt->[0]
-		} else {
-		    # create new entry in obuf
-		    push @$obuf,$pkt
-		}
 
-		if ( $pkt->[0] ne '' ) {
-		    $xsn = ( $xsn + length($pkt->[0])) % 2**32;
-		    # ACK to FIN might ack previous packets too, so insert
-		    # empty dummy packet for FIN if necessary
-		    $pkts->{$xsn} ||= [ '',$pkt->[1] ];
+		# apply ACK to $pkt
+		if ( $pkt->[P_DATA] ne '' ) {
+		    my $acklen = ($xsn <= $asn) ? $asn - $xsn : 2**32 - $xsn + $asn;
+		    if ($acklen >= length($pkt->[P_DATA])) {
+			# ACK for full length
+			$xsn = ( $xsn + length($pkt->[P_DATA]) ) % 2**32;
+			# ACK to FIN might ack previous packets too, so insert
+			# empty dummy packet for FIN if necessary
+			$pkts->{$xsn} ||= [ '',$pkt->[P_TIME] ];
+		    } else {
+			# Only part of $pkt got acked. Put rest back with new xsn.
+			$xsn = ( $xsn + $acklen ) % 2**32;
+			$pkts->{$xsn} and die "have already D_OPKT entry for $xsn";
+			$pkts->{$xsn} = $pkt;
+			$pkt = [ substr($pkt->[P_DATA],0,$acklen,''), $pkt->[P_TIME] ];
+		    }
 
 		} else {
 		    debug("got ACK for FIN($odir)");
 		    $xsn = ( $xsn + 1 ) % 2**32;
 
 		    # eof - set to 2 if both sides closed
-		    $eof = $conn->[$dir][3] & 0b1000 ? 2:1;
+		    $eof = $conn->[$dir][D_STATE] & 0b1000 ? 2:1;
+		}
 
+		# Add $pkt to D_BUF
+		# merge packets which came later but are earlier in the stream
+		# into $pkt
+		if ( @$obuf && $obuf->[-1][P_TIME] >= $pkt->[P_TIME] ) {
+		    # merge with existing entry
+		    $obuf->[-1][P_DATA] .= $pkt->[P_DATA]
+		} else {
+		    # create new entry in obuf
+		    push @$obuf,$pkt
+		}
+
+		if ($eof) {
 		    # upper flow needs to process all remaining data on eof, so
 		    # pack them together
 		    if (@$obuf>1) {
 			$pkt = shift(@$obuf);
-			$pkt->[0] .= $_->[0] for(@$obuf);
+			$pkt->[P_DATA] .= $_->[P_DATA] for(@$obuf);
 			@$obuf = $pkt;
 		    }
 
@@ -204,7 +238,7 @@ sub pktin {
 	    if ( $xsn != $asn ) {
 		trace("lost packets before ACK($odir)=$asn SN($odir)=$xsn $saddr.$sport -> $daddr.$dport");
 		delete $self->{conn}{$saddr,$sport,$daddr,$dport};
-		if ( my $obj = $conn->[2] ) {
+		if ( my $obj = $conn->[C_OBJ] ) {
 		    $obj->fatal( "lost packets before ACK($odir)=$asn, SN($odir)=$xsn",
 			$dir,$meta->{time});
 		}
@@ -212,13 +246,13 @@ sub pktin {
 	    }
 
 	    # update sn etc
-	    $conn->[$odir][0] = $xsn;
-	    $conn->[$odir][3] |= 0b1000 if $eof;
+	    $conn->[$odir][D_SN] = $xsn;
+	    $conn->[$odir][D_STATE] |= 0b1000 if $eof;
 
 	    # forward data
-	    if ( my $obj = $conn->[2] ) {
+	    if ( my $obj = $conn->[C_OBJ] ) {
 		while ( my $buf = shift(@$obuf) ) {
-		    my $n = $obj->in($odir,$buf->[0],$eof,$buf->[1]);
+		    my $n = $obj->in($odir,$buf->[P_DATA],$eof,$buf->[P_TIME]);
 
 		    if ( ! defined $n ) {
 			# error processing -> close
@@ -226,7 +260,7 @@ sub pktin {
 			trace("error processing data in hook in $saddr.$sport -> $daddr.$dport");
 			delete $self->{conn}{$saddr,$sport,$daddr,$dport};
 			return 1;
-		    } elsif ( $n == length($buf->[0]) ) {
+		    } elsif ( $n == length($buf->[P_DATA]) ) {
 			# everything processed
 			next;
 		    } elsif ( $eof ) {
@@ -234,8 +268,8 @@ sub pktin {
 			return 1;
 		    }  else {
 			# keep bytes in $buf which were not processed
-			substr($buf->[0],0,$n,'');
-			debug("keep %d bytes in buffer for $odir",length($buf->[1]));
+			substr($buf->[P_DATA],0,$n,'');
+			debug("keep %d bytes in buffer for $odir",length($buf->[P_DATA]));
 			unshift @$obuf,$buf;
 			last;
 		    }
@@ -251,7 +285,7 @@ sub pktin {
 	}
 
 	# check for ACK to SYN
-	my $osn = $conn->[$odir][0];
+	my $osn = $conn->[$odir][D_SN];
 	if ( ! defined $osn ) {
 	    # got ack w/o syn?
 	    trace("received ACK w/o SYN for dir=$odir $saddr.$sport -> $daddr.$dport");
@@ -259,18 +293,18 @@ sub pktin {
 	}
 
 	# ACK for SYN?
-	if ( not $conn->[$odir][3] & 0b0010 ) {
+	if ( not $conn->[$odir][D_STATE] & 0b0010 ) {
 	    # check that ACK matches ISN from SYN
 	    if ( $osn % 2**32 != $asn ) {
 		trace("got ACK($asn) which does not match SYN($osn)");
 		return 1;
 	    }
 	    # ack ok
-	    $conn->[$odir][3] |= 0b0010;
+	    $conn->[$odir][D_STATE] |= 0b0010;
 	    debug("got ACK for SYN($odir)");
 
 	    # got other side syn+ack too? -> new connection
-	    if ( $conn->[$dir][3] & 0b0010 ) {
+	    if ( $conn->[$dir][D_STATE] & 0b0010 ) {
 		# make connection object
 		my $obj = $self->new_connection({
 		    time  => $meta->{time},
@@ -286,7 +320,7 @@ sub pktin {
 		    return 1;
 		}
 		debug("created object for $saddr.$sport -> $daddr.$dport $obj");
-		$conn->[2] = $obj;
+		$conn->[C_OBJ] = $obj;
 	    }
 	}
     }
@@ -300,8 +334,8 @@ sub new_connection { shift->{upper_flow}->new_connection(@_) }
 sub expire {
     my ($self,$time) = @_;
     while (my ($k,$c) = each %{$self->{conn}} ) {
-	$c->[2] or next;
-	$c->[2]->expire($time) or next;
+	$c->[C_OBJ] or next;
+	$c->[C_OBJ]->expire($time) or next;
 	delete $self->{conn}{$k}
     }
 }
