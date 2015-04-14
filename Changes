@@ -1,3 +1,5 @@
+0.321 2015/04/14
+- L7::HTTP::Request::InspectChain - various fixes
 0.320 2015/03/07
 - L7::HTTP - make sure in_wsdata is called when only data frame header is
   received.

@@ -274,7 +274,7 @@ sub in_request_body {
 	$self->xdebug("no hooks");
     }
     my $n = $self->{upper_flow} &&
-	$self->{upper_flow}->in_request_body($self,$data,$eof,$time);
+	$self->{upper_flow}->in_request_body($data,$eof,$time);
     if ( defined $lasthook ) {
 	substr($hooks->[$lasthook][1],0,$n,'') if $n;
 	if ( $eof && grep { $_->[1] ne '' } @$hooks ) {
@@ -307,7 +307,7 @@ sub in_response_body {
 	$data = $$ref if defined $lasthook;
     }
     my $n = $self->{upper_flow} &&
-	$self->{upper_flow}->in_response_body($self,$data,$eof,$time);
+	$self->{upper_flow}->in_response_body($data,$eof,$time);
     if ( defined $lasthook ) {
 	substr($hooks->[$lasthook][1],0,$n,'') if $n;
 	if ( $eof && grep { $_->[1] ne '' } @$hooks ) {
@@ -330,7 +330,7 @@ sub in_chunk_header {
 	    $data eq '' and return $bytes;
 	}
     }
-    $self->{upper_flow}->in_chunk_header($self,$dir,$data,$time)
+    $self->{upper_flow}->in_chunk_header($dir,$data,$time)
 	if $self->{upper_flow};
     return $bytes;
 }
@@ -347,7 +347,7 @@ sub in_chunk_trailer {
 	    $data eq '' and return $bytes;
 	}
     }
-    $self->{upper_flow}->in_chunk_trailer($self,$dir,$data,$time)
+    $self->{upper_flow}->in_chunk_trailer($dir,$data,$time)
 	if $self->{upper_flow};
     return $bytes;
 }
@@ -378,7 +378,7 @@ sub _rphdr_unchunk {
     $$hdr_ref = $hdr->as_string;
 
     my $ignore = sub {
-	my ($self,$data_ref) = @_;
+	my ($self,$dir,$data_ref) = @_;
 	$$data_ref = '';
 	return 1;
     };
@@ -676,13 +676,13 @@ This is similar to C<request_body>, except that is applied to the response
 body. It will only be called on the content, not on the framing of chunked
 encoding.
 
-=item chunked_header => sub($self,\$hdr,$time,@hook_args)
+=item chunked_header => sub($self,$dir,\$hdr,$time,@hook_args)
 
 This will be called for each header of the framing in chunked encoding.
 One can modify C<$hdr>. The hook should return undef on error, otherwise
 something defined.
 
-=item chunked_trailer => sub($self,\$trailer,$time,@hook_args)
+=item chunked_trailer => sub($self,$dir,\$trailer,$time,@hook_args)
 
 This will be called for the trailer of the framing in chunked encoding.
 One can modify C<$trailer>. The hook should return undef on error, otherwise
