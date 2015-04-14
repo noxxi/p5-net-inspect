@@ -1,4 +1,7 @@
 0.323 2015/04/14
+- L7::HTTP::Request::InspectChain - call new_request from upper_flow with
+  meta data when creating a new request object
+0.322 2015/04/14
 - L4::TCP - handle case where only part of packet gets ACKed
 0.321 2015/04/14
 - L7::HTTP::Request::InspectChain - various fixes

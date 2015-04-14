@@ -57,6 +57,10 @@ sub new {
     sub new_request {
 	my ($self,$meta,$conn) = @_;
 	my $obj = $self->new;
+	if ($obj->{upper_flow}) {
+	    $obj->{upper_flow} = $obj->{upper_flow}->new_request($meta)
+		or return;
+	}
 	weaken($obj->{conn} = $conn);
 	$obj->{meta} = $meta;
 	return $obj;
