@@ -43,7 +43,7 @@ our (@EXPORT_OK,%EXPORT_TAGS);
 use constant {
     METHODS_WITHOUT_RQBODY => [qw(GET HEAD DELETE CONNECT)],
     METHODS_WITH_RQBODY    => [qw(POST PUT)],
-    METHODS_WITHOUT_RPBODY => [qw(HEAD)],
+    METHODS_WITHOUT_RPBODY => [qw(HEAD CONNECT)],
     CODE_WITHOUT_RPBODY    => [100..199, 204, 205, 304],
 };
 
@@ -1087,6 +1087,8 @@ sub parse_rsphdr {
     # successful response to CONNECT
     if ($request->{method} eq 'CONNECT' and $code >= 200 and $code < 300) {
 	$hdr->{upgrade} = 'CONNECT';
+	$hdr->{content_length} = 0;
+	delete $hdr->{chunked};
 	return;
     }
 
