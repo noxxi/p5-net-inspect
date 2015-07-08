@@ -39,10 +39,10 @@ my $usage = sub {
     print STDERR "ERROR: @_\n" if @_;
     print STDERR <<USAGE;
 
-reads data from pcap file or device and analyzes it.
-Right now it will collect tcp streams which look like http and extract
-requests and responses. Transfer encoding of chunked and content encoding
-of gzip/deflate will be transparently removed.
+Reads data from pcap file or device and analyzes it.
+It will extract UDP and TCP streams and HTTP requests and will write each of
+these into a separate pcap file. HTTP bodies will be unchunked and uncompressed
+by default.
 
 Usage: $0 [options] [pcap-filter]
 Options:
