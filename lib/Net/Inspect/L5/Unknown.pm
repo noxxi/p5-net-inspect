@@ -31,13 +31,15 @@ sub guess_protocol {
 }
 
 sub new_connection {
-    my ($class,$meta) = @_;
-    return $class->new;
+    my ($self,$meta) = @_;
+    return $self->{upper_flow}->new_connection($meta) if $self->{upper_flow};
+    return $self->new;
 }
 
 sub in {
     my ($self,$dir,$data,$eof,$time) = @_;
     $self->{expire} = $time + 500;
+    return $self->{upper_flow}->in($dir,$data,$eof,$time) if $self->{upper_flow};
     return length($data); # ignores
 }
 

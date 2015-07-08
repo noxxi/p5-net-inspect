@@ -277,10 +277,15 @@ sub in_request_body {
     } else {
 	$self->xdebug("no hooks");
     }
-    my $n = $self->{upper_flow} &&
-	$self->{upper_flow}->in_request_body($data,$eof,$time);
+    my $n = $self->{upper_flow} ?
+	$self->{upper_flow}->in_request_body($data,$eof,$time) : -1;
     if ( defined $lasthook ) {
-	substr($hooks->[$lasthook][1],0,$n,'') if $n;
+	if (!$n) {
+	} elsif ($n<0) {
+	    $hooks->[$lasthook][1] = '';
+	} else {
+	    substr($hooks->[$lasthook][1],0,$n,'');
+	}
 	if ( $eof && grep { $_->[1] ne '' } @$hooks ) {
 	    die "out-buffer in hook not empty at in_request_body(eof)";
 	}
@@ -310,10 +315,15 @@ sub in_response_body {
 	}
 	$data = $$ref if defined $lasthook;
     }
-    my $n = $self->{upper_flow} &&
-	$self->{upper_flow}->in_response_body($data,$eof,$time);
+    my $n = $self->{upper_flow} ?
+	$self->{upper_flow}->in_response_body($data,$eof,$time) : -1;
     if ( defined $lasthook ) {
-	substr($hooks->[$lasthook][1],0,$n,'') if $n;
+	if (!$n) {
+	} elsif ($n<0) {
+	    $hooks->[$lasthook][1] = '';
+	} else {
+	    substr($hooks->[$lasthook][1],0,$n,'') if $n;
+	}
 	if ( $eof && grep { $_->[1] ne '' } @$hooks ) {
 	    die "out-buffer in hook not empty at in_response_body(eof)".Dumper($self); use Data::Dumper;
 	}

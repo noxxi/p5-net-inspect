@@ -15,6 +15,7 @@ use Net::Inspect::L4::UDP;
 # Options
 ############################################################################
 my ($infile,$dev,$nopromisc,@trace,$outdir,$format_pcap);
+my %proto = qw( tcp 1 udp 1 );
 GetOptions(
     'r=s' => \$infile,
     'i=s' => \$dev,
@@ -24,6 +25,8 @@ GetOptions(
     'T|trace=s' => sub { push @trace,split(m/,/,$_[1]) },
     'D|dir=s' => \$outdir,
     'pcap' => \$format_pcap,
+    'tcp!' => \$proto{tcp},
+    'udp!' => \$proto{udp},
 ) or usage();
 usage('only interface or file can be set') if $infile and $dev;
 $infile ||= '/dev/stdin' if ! $dev;
@@ -51,6 +54,8 @@ Options:
     -D dir           extract data into dir, each flow as a sperate tcp-*
 		     or udp-* files, either with seperate files for both
 		     direction or with --pcap as pcap files
+    --(no)tcp        output TCP or not (default on)
+    --(no)udp        output UDP or not (default on)
     --pcap           write each flow as file in pcap format
     -T trace         trace messages are enabled in the modules, option can
 		     be given multiple times, trace is last part of module name,
@@ -108,9 +113,10 @@ my $writer = sub {
     }
 };
 
-my $tcp = Net::Inspect::L4::TCP->new( ConnWriter->new( $writer->('tcp')));
-my $udp = Net::Inspect::L4::UDP->new( ConnWriter->new( $writer->('udp')));
-my $raw = Net::Inspect::L3::IP->new([$tcp,$udp]);
+my %l4;
+$l4{tcp} = Net::Inspect::L4::TCP->new( ConnWriter->new( $writer->('tcp'))) if $proto{tcp};
+$l4{udp} = Net::Inspect::L4::UDP->new( ConnWriter->new( $writer->('udp'))) if $proto{udp};
+my $raw = Net::Inspect::L3::IP->new([values %l4]);
 my $pc  = Net::Inspect::L2::Pcap->new($pcap,$raw);
 
 
@@ -120,8 +126,7 @@ my $time;
 pcap_loop($pcap,-1,sub {
     my (undef,$hdr,$data) = @_;
     if ( ! $time || $hdr->{tv_sec}-$time>10 ) {
-	$tcp->expire($time = $hdr->{tv_sec});
-	$udp->expire($time = $hdr->{tv_sec});
+	$_->expire($time = $hdr->{tv_sec}) for (values %l4);
     }
     return $pc->pktin($data,$hdr);
 },undef);

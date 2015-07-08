@@ -10,15 +10,16 @@ use warnings;
 
 package privHTTPRequest;
 use base 'Net::Inspect::L7::HTTP::Request::InspectChain';
-use fields qw(outdir fcache infosub flowid flowreqid fn chunked stat);
+use fields qw(writer outdir fcache infosub flowid flowreqid fn chunked stat);
 use Net::Inspect::Debug;
 
 sub new {
     my ($class,%args) = @_;
     my $self = $class->SUPER::new;
+    $self->{infosub} = $args{info}   || ref($class) && $class->{infosub};
+    $self->{writer}  = $args{writer} || ref($class) && $class->{writer};
     $self->{outdir}  = $args{dir}    || ref($class) && $class->{outdir};
     $self->{fcache}  = $args{fcache} || ref($class) && $class->{fcache};
-    $self->{infosub} = $args{info}   || ref($class) && $class->{infosub};
     die "no fcache given" if $self->{outdir} and ! $self->{fcache};
     return $self;
 }
@@ -42,6 +43,7 @@ sub in_request_header {
     my ($self,$hdr,$time) = @_;
     $self->{stat}{rqhdr} += length($hdr);
 
+    my $write;
     if ( $self->{outdir} ) {
 	for my $dir (0,1) {
 	    my $fname = sprintf("%s/%05d.%04d.%02d-%s.%s-%s.%s-%d",
@@ -56,18 +58,31 @@ sub in_request_header {
 	    $self->{fn}[$dir] = $fname;
 	    $self->{fcache}->add($fname) or die "cannot create $fname: $!";
 	}
+	$write = sub {
+	    my ($self,$dir,$data) = @_;
+	    my $fh = $self->{fcache}->get($self->{fn}[$dir]);
+	    print $fh $data;
+	}
+    } elsif ( $self->{writer}) {
+	my $obj = $self->{writer}->new_connection($self->{meta});
+	$write = sub {
+	    my ($self,$dir,$data) = @_;
+	    $obj->{writer}->write($dir,$data);
+	}
+    }
+
+    if ($write) {
 	my $wfh = sub {
 	    my ($self,$dir,$hdr) = @_;
-	    my $fh = $self->{fcache}->get($self->{fn}[$dir]);
-	    print $fh $hdr;
+	    $write->($self,$dir,$hdr);
 	    return 0;
 	};
 	my $wfb = sub {
 	    my ($self,$dir,$dr) = @_;
-	    my $fh = $self->{fcache}->get($self->{fn}[$dir]);
-	    print $fh $$dr;
+	    $write->($self,$dir,$$dr);
+	    my $rv = $$dr;
 	    $$dr = '';
-	    return '';
+	    return $rv;
 	};
 
 	$self->add_hooks({
@@ -75,21 +90,10 @@ sub in_request_header {
 	    response_header => sub { $wfh->($_[0],1,${$_[1]}) },
 	    request_body    => sub { $wfb->($_[0],0,$_[1]) },
 	    response_body   => sub { $wfb->($_[0],1,$_[1]) },
-	    chunk_header    => sub {
-		my ($self,$hdr) = @_;
-		my $fh = $self->{fcache}->get($self->{fn}[1]);
-		print $fh "\r\n" if $self->{chunked}++;
-		print $fh $$hdr;
-		$$hdr = '';
-	    },
-	    chunk_trailer   => sub {
-		my ($self,$trailer) = @_;
-		my $fh = $self->{fcache}->get($self->{fn}[1]);
-		print $fh $$trailer;
-		$$trailer = '';
-	    }
+	    chunk_header    => sub { $wfh->($_[0],$_[1],${$_[2]}) },
+	    chunk_trailer   => sub { $wfh->($_[0],$_[1],${$_[2]}) },
 	});
-    } 
+    }
 
     return $self->SUPER::in_request_header($hdr,$time);
 }
