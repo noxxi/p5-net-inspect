@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use Socket;
 use Getopt::Long qw(:config posix_default bundling);
-use Net::Pcap qw(:functions);
+use Net::Pcap qw(pcap_open_offline pcap_loop);
 
 use Net::Inspect::Debug qw(:DEFAULT %TRACE $DEBUG);
 use Net::Inspect::L2::Pcap;
@@ -98,7 +98,7 @@ my $writer = sub {
 		    $conn->{daddr}, $conn->{dport},
 		);
 	    } else {
-		return $w->tcp_conn(
+		return $w->udp_conn(
 		    $conn->{saddr}, $conn->{sport},
 		    $conn->{daddr}, $conn->{dport},
 		);
