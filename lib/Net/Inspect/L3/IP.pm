@@ -92,6 +92,10 @@ sub pktin4 {
 	return;
     }
     substr($data,$len) = '';
+    if ($ihl*4>$len) {
+	trace("header length(%d) > packet length(%d)",$ihl*4,$len);
+	return;
+    }
     my $buf = substr($data,$ihl*4);
 
     my $fo = ( $ffo & 0x1fff ) << 3; # fragment offset
@@ -193,7 +197,7 @@ sub _pktin6 {
     my ($data,$time) = @_;
 
     # parse and strip IPv6 header
-    my ($vtf,$len,$nextheader,$ttl,$saddr,$daddr) = unpack('NnCCA16A16',
+    my ($vtf,$len,$nextheader,$ttl,$saddr,$daddr) = unpack('NnCCa16a16',
 	substr($data,0,40,''));
 
     if ($len > length($data)) {
@@ -208,13 +212,13 @@ sub _pktin6 {
 
     my $proto;
     while ( $nextheader != 59 ) {
+	return if $data eq '';
 	if ($nextheader == 6 || $nextheader == 17 || $nextheader == 58) {
 	    $proto = $nextheader;
 	    last;
 	}
 	($nextheader,$len) = unpack("CC",$data);
-	substr($data,0,$len+1,''); # skip extension header
-	return if $data eq '';
+	substr($data,0,$len+8,''); # skip extension header
     }
 
     return $self->{upper_flow}->pktin( $data, {
