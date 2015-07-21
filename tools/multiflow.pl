@@ -196,10 +196,10 @@ sub new {
 	$prefix ||= $proto;
 	$self->{writer} = sub {
 	    my $conn = shift;
-	    my $fbase = sprintf("%s/%s%05d.%d-%s.%s-%s.%s",
+	    my $fbase = sprintf("%s/%05d-%s.%d-%s.%s-%s.%s",
 		$outdir,
-		$prefix,
 		$conn->{flowid},
+		$prefix,
 		$conn->{time},
 		$conn->{saddr}, $conn->{sport},
 		$conn->{daddr}, $conn->{dport},
