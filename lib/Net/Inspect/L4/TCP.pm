@@ -27,6 +27,7 @@ use constant {
     D_OPKT  => 1,
     D_BUF   => 2,
     D_STATE => 3,
+    D_TTL   => 4,
 
     C_DIR0  => 0,
     C_DIR1  => 1,
@@ -301,6 +302,7 @@ sub pktin {
 	    }
 	    # ack ok
 	    $conn->[$odir][D_STATE] |= 0b0010;
+	    $conn->[$dir][D_TTL] = $meta->{ttl};
 	    debug("got ACK for SYN($odir)");
 
 	    # got other side syn+ack too? -> new connection
@@ -312,6 +314,7 @@ sub pktin {
 		    sport => $sport,
 		    daddr => $daddr,
 		    dport => $dport,
+		    ttl   => $conn->[1][D_TTL],
 		});
 		if ( ! $obj ) {
 		    # hook says ignore connection

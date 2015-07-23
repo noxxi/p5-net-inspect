@@ -158,15 +158,20 @@ sub _info {
 	$uri = "http://$host$uri";
     }
     my $resp = $self->response_header;
+    my @info;
+    push @info, "ct:$_"     for grep { $_ } $resp->header('content-type');
+    push @info, "refer:$_"  for grep { $_ } $req->header('referer');
+    push @info, "origin:$_" for grep { $_ } $req->header('origin');
+    push @info, $_ for sort keys %{$self->{info}};
+    push @info, "ttl:$self->{meta}{ttl}";
     $infosub->( 
-	sprintf("%7.2f %05d.%04d %s %s -> %d ct:'%s', %s",
+	sprintf("%7.2f %05d.%04d %s %s -> %d %s",
 	    $self->{meta}{time},
 	    $self->{flowid},
 	    $self->{flowreqid},
 	    $req->method, $uri,
 	    $resp->code,
-	    join(' ',$resp->header('content-type')),
-	    join(' ', keys %{$self->{info}}),
+	    join(' ', @info),
 	),
 	{
 	    meta   => $self->{meta},
@@ -176,7 +181,7 @@ sub _info {
 	    uri    => $uri,
 	    req    => $req,
 	    resp   => $resp,
-	    info   => $self->{info},
+	    info   => \@info,
 	    stat   => $self->{stat},
 	}
     );
