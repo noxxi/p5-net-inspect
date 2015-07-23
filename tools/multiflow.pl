@@ -9,7 +9,12 @@ use Net::Pcap;
 BEGIN { 
     my $bin = __FILE__;
     $bin = readlink($bin) while ( -l $bin );
-    unshift @INC, $bin =~m{^(.*?)(?:\.\w+)?$}; 
+    my ($dir) = $bin =~m{^(.*?)(?:\.\w+)?$};
+    if ( -d $dir ) {
+	unshift @INC,$dir
+    } elsif ($dir =~s{/multiflow$}{/httpflow}) {
+	unshift @INC,$dir
+    }
 }
 
 use Net::Inspect::L2::Pcap;
@@ -104,6 +109,7 @@ die "cannot write to $outdir: $!" if $outdir and ! -w $outdir || ! -d _;
 # process files
 # ---------------------------------------------------------------------------- 
 
+my $fcache = privFileCache->new(128);
 for my $infile (@infile ? @infile : undef ) {
     # ------------------------------------------------------------------------ 
     # open pcap
@@ -125,7 +131,6 @@ for my $infile (@infile ? @infile : undef ) {
 
 
     my (%l4,$tcp_guess);
-    my $fcache = privFileCache->new(128);
     if ($flow{udp}) {
 	$l4{udp} = Net::Inspect::L4::UDP->new(PcapWriter->new('udp'));
     }
@@ -205,7 +210,8 @@ sub new {
 		$conn->{daddr}, $conn->{dport},
 	    );
 
-	    my $w = Net::PcapWriter->new("$fbase.pcap") or die $!;
+	    my $fh = $fcache->create("$fbase.pcap");
+	    my $w = Net::PcapWriter->new($fh) or die $!;
 	    if ( $proto eq 'tcp' ) {
 		return $w->tcp_conn(
 		    $conn->{saddr}, $conn->{sport},

@@ -11,6 +11,7 @@ use warnings;
 
 package privFileCache;
 use fields qw(open closed max n);
+use Symbol 'gensym';
 
 sub new {
     my ($class,$max) = @_;
@@ -22,26 +23,25 @@ sub new {
     return $self;
 }
 
-sub add {
+sub create {
     my ($self,$fname) = @_;
-    return $self->get($fname,1);
+    $self->_get($fname,1) or return;
+    my $fh = gensym();
+    tie *$fh,'privFileCache::HANDLE',$self,$fname;
+    return $fh;
 }
 
-sub del {
-    my ($self,$fname) = @_;
-    delete $self->{open}{$fname};
-    delete $self->{closed}{$fname};
-}
-
-sub get {
+sub _get {
     my ($self,$fname,$create) = @_;
     my $fh = $self->{open}{$fname};
     $fh = $fh && $fh->[0];
-    if ( $create ) {
+    if ($create) {
 	_expire($self) if ! $fh;
-	$fh = _open($self,'>',$fname) or return;
+	$fh = _open($self,'>',$fname) or do {
+	    delete $self->{open}{$fname};
+	    return;
+	};
     }
-
     if ( ! $fh ) {
 	$self->{closed}{$fname} or die "$fname not in pool";
 	$fh = _open($self,'>>',$fname) or return;
@@ -51,6 +51,13 @@ sub get {
     $self->{open}{$fname} = [ $fh,$self->{n}++ ];
     return $fh;
 }
+
+sub _del {
+    my ($self,$fname) = @_;
+    delete $self->{open}{$fname};
+    delete $self->{closed}{$fname};
+}
+
 
 sub _open {
     my ($self,$what,$fname) = @_;
@@ -77,5 +84,38 @@ sub _expire {
 	$self->{closed}{$fn} = 1;
     }
 }
+
+package privFileCache::HANDLE;
+use strict;
+use Errno 'EBADF';
+use Scalar::Util 'weaken';
+
+sub TIEHANDLE {
+    my ($class, $fcache, $fname) = @_;
+    weaken($fcache);
+    bless { fcache => $fcache, fname => $fname }, $class;
+}
+
+sub PRINT {
+    my $self = shift;
+    my $fh = $self->{fcache}->_get($self->{fname}) or return;
+    print $fh @_;
+};
+
+sub PRINTF {
+    my $self = shift;
+    my $fh = $self->{fcache}->_get($self->{fname}) or return;
+    printf $fh @_;
+};
+    
+*WRITE = \&PRINT;
+*READ = *READLINE = *GETC = *FILENO = *TELL = sub { die "not implemented" };
+sub BINMODE  { return 0 }
+
+sub CLOSE {
+    my $self = shift;
+    $self->{fcache}->_del($self->{fname}) or return;
+}
+
 
 1;

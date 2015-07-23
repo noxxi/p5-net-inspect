@@ -25,6 +25,7 @@ tools/httpflow.pl
 tools/httpflow/privFileCache.pm
 tools/httpflow/privHTTPConn.pm
 tools/httpflow/privHTTPRequest.pm
+tools/multiflow.pl
 tools/tcpudpflow.pl
 tools/rtpxtract.pl
 tools/live-http-headers.pl

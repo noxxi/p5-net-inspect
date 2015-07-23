@@ -10,7 +10,7 @@ use warnings;
 
 package privHTTPRequest;
 use base 'Net::Inspect::L7::HTTP::Request::InspectChain';
-use fields qw(writer outdir fcache infosub flowid flowreqid fn chunked stat);
+use fields qw(writer outdir fcache infosub flowid flowreqid chunked stat);
 use Net::Inspect::Debug;
 
 sub new {
@@ -28,15 +28,8 @@ sub new_request {
     my $obj = $self->SUPER::new_request($meta,$conn);
     $obj->{flowid} = $conn->{connid};
     $obj->{flowreqid}  = $meta->{reqid},
-    $obj->{fn} = [];
     $obj->{stat} = {};
     return $obj;
-}
-
-sub DESTROY {
-    my $self = shift;
-    my $fn = $self->{fn} or return;
-    $self->{fcache} && $self->{fcache}->del($_) for (@$fn);
 }
 
 sub in_request_header {
@@ -45,6 +38,7 @@ sub in_request_header {
 
     my $write;
     if ( $self->{outdir} ) {
+	my @fh;
 	for my $dir (0,1) {
 	    my $fname = sprintf("%s/%05d.%04d.%02d-%s.%s-%s.%s-%d",
 		$self->{outdir},
@@ -55,43 +49,42 @@ sub in_request_header {
 		$self->{meta}{daddr}, $self->{meta}{dport},
 		$dir
 	    );
-	    $self->{fn}[$dir] = $fname;
-	    $self->{fcache}->add($fname) or die "cannot create $fname: $!";
+	    $fh[$dir] = $self->{fcache}->create($fname) 
+		or die "cannot create $fname: $!";
 	}
 	$write = sub {
-	    my ($self,$dir,$data) = @_;
-	    my $fh = $self->{fcache}->get($self->{fn}[$dir]);
-	    print $fh $data;
-	}
+	    my ($dir,$data) = @_;
+	    $fh[$dir]->print($data);
+	};
     } elsif ( $self->{writer}) {
 	my $obj = $self->{writer}->new_connection($self->{meta});
 	$write = sub {
-	    my ($self,$dir,$data) = @_;
+	    my ($dir,$data) = @_;
 	    $obj->{writer}->write($dir,$data);
 	}
     }
 
     if ($write) {
 	my $wfh = sub {
-	    my ($self,$dir,$hdr) = @_;
-	    $write->($self,$dir,$hdr);
+	    my ($dir,$hdr) = @_;
+	    $write->($dir,$hdr);
 	    return 0;
 	};
 	my $wfb = sub {
-	    my ($self,$dir,$dr) = @_;
-	    $write->($self,$dir,$$dr);
+	    my ($dir,$dr) = @_;
+	    $write->($dir,$$dr);
 	    my $rv = $$dr;
 	    $$dr = '';
 	    return $rv;
 	};
 
 	$self->add_hooks({
-	    request_header  => sub { $wfh->($_[0],0,${$_[1]}) },
-	    response_header => sub { $wfh->($_[0],1,${$_[1]}) },
-	    request_body    => sub { $wfb->($_[0],0,$_[1]) },
-	    response_body   => sub { $wfb->($_[0],1,$_[1]) },
-	    chunk_header    => sub { $wfh->($_[0],$_[1],${$_[2]}) },
-	    chunk_trailer   => sub { $wfh->($_[0],$_[1],${$_[2]}) },
+	    request_header  => sub { $wfh->(0,${$_[1]}) },
+	    response_header => sub { $wfh->(1,${$_[1]}) },
+	    request_body    => sub { $wfb->(0,$_[1]) },
+	    response_body   => sub { $wfb->(1,$_[1]) },
+	    chunk_header    => sub { $wfh->($_[1],${$_[2]}) },
+	    chunk_trailer   => sub { $wfh->($_[1],${$_[2]}) },
 	});
     }
 
