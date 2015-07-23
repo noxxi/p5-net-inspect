@@ -1,3 +1,11 @@
+0.325 2015/07/23
+- new tool tools/multiflow to extract UDP, TCP streams and HTTP requests as
+  pcap. More information in verbose output of httpflow, like ttl and
+  referer.
+- L4::TCP now propagates TTL from SYN+ACK of server within meta data of new
+  connection to next layer
+- some fixes for handling IPv6 and invalid IPv4
+- httpflow no works with newer Net::Pcap which don't export :functions 
 0.324 2015/04/20
 - L7::HTTP - include CONNECT in METHODS_WITHOUT_RPBODY
 0.323 2015/04/14
