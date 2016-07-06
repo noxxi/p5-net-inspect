@@ -1,3 +1,18 @@
+0.326 2016/07/06
+- initial support for SMTP 
+  - implemented in L7::SMTP
+  - tool to extract mails from SMTP traffic: tools/smtp2mbox.pl
+  - no support for BDAT yet (will croak)
+- L4::HTTP
+  - if request object implements fix_reqhdr/fix_rsphdr method these get
+    used in case of invalid request/response headers to fix the headers
+  - downgrade unexpected status code 1xx to warning instead of error
+- L4::TCP 
+  - don't call upper flow with empty packets (unless FIN)
+  - merge data into next buffer and retry if no data could be processed by upper
+    flow
+- escape special characters in debug function
+
 0.325 2015/07/23
 - new tool tools/multiflow to extract UDP, TCP streams and HTTP requests as
   pcap. More information in verbose output of httpflow, like ttl and

@@ -350,8 +350,16 @@ sub _in0 {
 	    $bytes += $n;
 	    $rq->{state} |= RQHDR_DONE; # rqhdr done
 
-	    my %hdr;
-	    my $err = parse_reqhdr($hdr,\%hdr);
+	    my (%hdr,@warn);
+	    my $err = parse_reqhdr($hdr,\%hdr,\@warn);
+	    if ($err and my $sub = $obj->can('fix_reqhdr')) {
+		$hdr = $sub->($obj,$hdr);
+		$err = parse_rsphdr($hdr,\%hdr,\@warn);
+	    }
+	    if (@warn && %TRACE) {
+		$self->xtrace($_) for @warn;
+	    }
+
 	    if ($err) {
 		($obj||$self)->fatal($err,0,$time);
 		$rq->{state} |= RQ_ERROR;
@@ -658,6 +666,10 @@ sub _in1 {
 
 	    my %hdr;
 	    my $err = parse_rsphdr($hdr,$rq->{request},\%hdr);
+	    if ($err and my $sub = $obj->can('fix_rsphdr')) {
+		$hdr = $sub->($obj,$hdr);
+		$err = parse_rsphdr($hdr,$rq->{request},\%hdr);
+	    }
 
 	    goto error if $err;
 	    $DEBUG && $rq->xdebug("got response header");
@@ -1026,7 +1038,7 @@ sub parse_reqhdr {
 }
 
 sub parse_rsphdr {
-    my ($data,$request,$hdr) = @_;
+    my ($data,$request,$hdr,$warn) = @_;
     $data =~ m{\A
 	HTTP/(1\.[01])[\040\t]+          # $1: version
 	(\d\d\d)                         # $2: code
@@ -1055,14 +1067,16 @@ sub parse_rsphdr {
     $hdr->{fields} = \%kv;
     $hdr->{junk} = $bad if $bad ne '';
 
-    if ($code == 100 and $request->{expect}{'100-continue'}
-	or $code == 102) {
+    if ($code<=199) {
 	# Preliminary responses do not contain any body.
-	# 100 should only happen with Expect: 100-continue from client
 	$hdr->{preliminary} = 1;
 	$hdr->{content_length} = 0;
-    } elsif ($code != 101 and $code <= 199) {
-	return "unexpected status code $code";
+	if ($code == 100 and $request->{expect}{'100-continue'}
+	    or $code == 102 or $code == 101) {
+	    # 100 should only happen with Expect: 100-continue from client
+	} else {
+	    push @$warn,"unexpected intermediate status code $code" if $warn;
+	}
     }
 
     # Switching Protocols
@@ -1079,6 +1093,8 @@ sub parse_rsphdr {
 
 	if (keys(%proto) == 1) {
 	    $hdr->{upgrade} = (keys %proto)[0];
+	    $hdr->{preliminary} = 0;
+	    $hdr->{content_length} = undef;
 	} else {
 	    return "invalid or unsupported connection upgrade";
 	}
@@ -1516,7 +1532,7 @@ C<in_request_header>. See there for more details about the contents of the hash.
 If C<$external_length> is true it will not complain if a content-length is
 required but not defined.
 
-=item parse_rsphdr($string,\%request,\%header) -> $bad_header
+=item parse_rsphdr($string,\%request,\%header,\@warn) -> $bad_header
 
 This will parse the given C<$string> as a response header and extract
 information into \%header. These information then later will be given to

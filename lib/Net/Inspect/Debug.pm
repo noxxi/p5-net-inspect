@@ -67,6 +67,19 @@ sub debug {
     my $sub = (caller(1))[3];
     $sub =~s{^main::}{} if $sub;
     $sub ||= 'Main';
+    $msg =~ s{
+	(\\)
+	| (\r)
+	| (\n)
+	| (\t)
+	| ([\x00-\x1f\x7f-\xff])
+    }{
+	$1 ? "\\\\" :
+	$2 ? "\\r" :
+	$3 ? "\\n" :
+	$4 ? "\\t" :
+	sprintf("\\x%02x",ord($5))
+    }xesg;
     $msg = "${sub}[$line]: ".$msg;
 
     if ( $OUTPUT_SUB ) {

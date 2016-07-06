@@ -16,6 +16,7 @@ lib/Net/Inspect/L7/HTTP.pm
 lib/Net/Inspect/L7/HTTP/Request/InspectChain.pm
 lib/Net/Inspect/L7/HTTP/Request/Simple.pm
 lib/Net/Inspect/L7/HTTP/WebSocket.pm
+lib/Net/Inspect/L7/SMTP.pm
 Makefile.PL
 MANIFEST
 README
@@ -30,4 +31,5 @@ tools/tcpudpflow.pl
 tools/rtpxtract.pl
 tools/live-http-headers.pl
 tools/unsocksify-pcap.pl
+tools/smtp2mbox.pl
 tools/README

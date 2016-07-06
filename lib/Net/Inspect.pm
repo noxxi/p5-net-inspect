@@ -2,7 +2,7 @@ use strict;
 use warnings;
 package Net::Inspect;
 
-our $VERSION = "0.325";
+our $VERSION = "0.326";
 1;
 
 

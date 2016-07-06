@@ -253,7 +253,9 @@ sub pktin {
 	    # forward data
 	    if ( my $obj = $conn->[C_OBJ] ) {
 		while ( my $buf = shift(@$obuf) ) {
-		    my $n = $obj->in($odir,$buf->[P_DATA],$eof,$buf->[P_TIME]);
+		    my $n = ($eof || $buf->[P_DATA] ne '')
+			? $obj->in($odir,$buf->[P_DATA],$eof,$buf->[P_TIME])
+			: 0;
 
 		    if ( ! defined $n ) {
 			# error processing -> close
@@ -267,6 +269,24 @@ sub pktin {
 		    } elsif ( $eof ) {
 			$obj->fatal("handler did not eat all data on eof",$dir,$meta->{time});
 			return 1;
+		    } elsif (!$n) {
+			# Processed nothing, which means we need more data.
+			# Try to merge this buffer into next one in the hope
+			# that we can process the data together
+			if (@$obuf) {
+			    $obuf->[-1][P_DATA] =
+				$buf->[P_DATA] . $obuf->[-1][P_DATA];
+			    debug("merge %d bytes into next buffer for $odir",
+				length($buf->[P_DATA]));
+			    next;
+			}
+
+			# no more data yet:
+			# put buffer back and wait for more data
+			debug("keep full buffer (%d bytes) for $odir",length($buf->[P_DATA]));
+			unshift @$obuf,$buf;
+			last;
+
 		    }  else {
 			# keep bytes in $buf which were not processed
 			substr($buf->[P_DATA],0,$n,'');
