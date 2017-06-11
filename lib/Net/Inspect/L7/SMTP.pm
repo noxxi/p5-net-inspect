@@ -69,8 +69,10 @@ sub guess_protocol {
     my $connid = 0;
     sub syn { 1 }; # in case it is attached to Net::Inspect::Tcp
     sub new_connection {
-	my ($self,$meta,%args) = @_;
-	my $obj = $self->new;
+	my ($self,$meta,@args) = @_;
+	my $obj = $self->new(@args);
+	$obj->{upper_flow} = $obj->{upper_flow}->new_connection($meta)
+	    or return;
 	$obj->{meta} = $meta;
 	$obj->{connid} = ++$connid;
 	$obj->{offset} = [0,0];
@@ -324,6 +326,10 @@ Gaps are currently not support.
 The attached flow object needs to implement the following hooks:
 
 =over 4
+
+=item new_connection($meta)
+
+Called on start of SMTP connection to initialize object.
 
 =item $obj->greeting($msg,$time)
 
