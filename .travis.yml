@@ -2,6 +2,7 @@ branches:
   except:
     - gh-pages
 language: perl
+sudo: required
 perl:
   - "5.26"
   - "5.24"
